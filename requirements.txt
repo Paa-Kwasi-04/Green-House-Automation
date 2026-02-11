@@ -1,0 +1,4 @@
+numpy
+pyserial
+RPi.GPIO
+scikit-fuzzy
