@@ -219,7 +219,7 @@ def main():
     # Configuration
     BROKER = "test.mosquitto.org"  # Public MQTT broker
     PORT = 1883
-    SERIAL_PORT = "COM6"  
+    SERIAL_PORT = "COM3"  
     BAUDRATE = 115200
     
     # Initialize components

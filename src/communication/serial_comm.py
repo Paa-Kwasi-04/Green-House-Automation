@@ -7,6 +7,7 @@ Arduino or other microcontrollers to read sensor data from the greenhouse.
 
 import serial
 import time
+from serial.tools import list_ports
 
 
 class SerialComm:
@@ -95,16 +96,39 @@ class SerialComm:
         This method will print connection status messages to stdout.
         """
         try:
-            self.ser = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=self.timeout
-                )
-            time.sleep(2)
-            print(f"[INFO] Connected to {self.port}")
-            return True
-        except serial.SerialException as e:
-            print(f"[ERROR] Could not open serial port: {e}")
+            candidate_ports = []
+
+            if self.port:
+                candidate_ports.append(self.port)
+
+            available_ports = [port.device for port in list_ports.comports()]
+            for port in available_ports:
+                if port not in candidate_ports:
+                    candidate_ports.append(port)
+
+            if not candidate_ports:
+                print("[ERROR] No serial ports detected.")
+                return False
+
+            for port in candidate_ports:
+                try:
+                    self.ser = serial.Serial(
+                        port=port,
+                        baudrate=self.baudrate,
+                        timeout=self.timeout
+                    )
+                    time.sleep(2)
+                    self.port = port
+                    print(f"[INFO] Connected to {self.port}")
+                    return True
+                except serial.SerialException:
+                    self.ser = None
+                    continue
+
+            print("[ERROR] Could not open any detected serial port.")
+            return False
+        except Exception as e:
+            print(f"[ERROR] Serial connection failed: {e}")
             self.ser = None
             return False
 
@@ -246,7 +270,7 @@ class SerialComm:
 
 
 def main(): 
-    serial_comm = SerialComm(port='COM6', baudrate=115200, timeout=1, reconnect_interval=2.0, max_retries=None)
+    serial_comm = SerialComm(port='COM3', baudrate=115200, timeout=1, reconnect_interval=2.0, max_retries=None)
     serial_comm.connect()
     try:
         while True:
