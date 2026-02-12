@@ -47,7 +47,7 @@ class SerialComm:
         Timestamp of the last reconnection attempt.
     """
     
-    def __init__(self,port,baudrate=9600,timeout=1,reconnect_interval=0.5,max_retries=None):
+    def __init__(self, port, baudrate=9600, timeout=1, reconnect_interval=0.5, max_retries=None):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
@@ -173,7 +173,7 @@ class SerialComm:
             self.ser = None
             return None
         
-    def parse_data(self,line:str):
+    def parse_data(self, line: str):
         """
         Parse a comma-separated line of sensor data.
         

@@ -160,11 +160,15 @@ class MQTTClient:
         >>> client.publish_sensors({
         ...     'temperature': 25.5,
         ...     'humidity': 60.2,
-        ...     'co2': 400.0
+        ...     'co2': 400.0,
+        ...     'light': 850.0,
+        ...     'moisture': 45.0
         ... })
         [MQTT] Published greenhouse/sensors/temperature -> 25.5
         [MQTT] Published greenhouse/sensors/humidity -> 60.2
         [MQTT] Published greenhouse/sensors/co2 -> 400.0
+        [MQTT] Published greenhouse/sensors/light -> 850.0
+        [MQTT] Published greenhouse/sensors/moisture -> 45.0
         """
         for key, value in data.items():
             topic = f"greenhouse/sensors/{key}"
