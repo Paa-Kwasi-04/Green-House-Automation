@@ -1,3 +1,10 @@
+"""
+MQTT Communication Module for Green House Automation.
+
+This module provides an MQTTClient class for handling MQTT communication
+to publish sensor data and system status to an MQTT broker.
+"""
+
 import paho.mqtt.client as mqtt
 import json
 import time
@@ -5,6 +12,38 @@ from serial_comm import SerialComm
 
 
 class MQTTClient:
+    """
+    MQTT client for publishing greenhouse sensor data and system status.
+    
+    This class manages MQTT broker connections, automatic reconnection,
+    and publishing of sensor data and system status messages.
+    
+    Parameters
+    ----------
+    broker : str
+        The MQTT broker hostname or IP address.
+    port : int, optional
+        The MQTT broker port number (default is 1883).
+    client_id : str, optional
+        Unique identifier for this MQTT client (default is "greenhouse_pi").
+    
+    Attributes
+    ----------
+    broker : str
+        The MQTT broker hostname or IP address.
+    port : int
+        The MQTT broker port number.
+    client_id : str
+        Unique identifier for this MQTT client.
+    client : paho.mqtt.client.Client
+        The underlying MQTT client instance.
+    reconnect_interval : float
+        Time in seconds between reconnection attempts.
+    last_reconnect : float
+        Timestamp of the last reconnection attempt.
+    loop_started : bool
+        Whether the MQTT client's network loop has been started.
+    """
 
     def __init__(self, broker, port=1883, client_id="greenhouse_pi"):
         self.broker = broker
@@ -17,16 +56,57 @@ class MQTTClient:
         self.loop_started = False
 
     def on_disconnect(self, client, userdata, rc):
+        """
+        Callback function triggered when the client disconnects from the broker.
+        
+        Parameters
+        ----------
+        client : paho.mqtt.client.Client
+            The MQTT client instance.
+        userdata : any
+            User-defined data passed to callbacks.
+        rc : int
+            The disconnection result code. 0 indicates a clean disconnect,
+            non-zero indicates an unexpected disconnection.
+        
+        Notes
+        -----
+        This method is automatically called by the paho-mqtt library.
+        """
         if rc != 0:
             print(f"[MQTT] Unexpected disconnection: {rc}")
         else:
             print("[MQTT] Disconnected")
 
     def is_connected(self):
+        """
+        Check if the MQTT client is currently connected to the broker.
+        
+        Returns
+        -------
+        bool
+            True if connected to the broker, False otherwise.
+        """
         return self.client.is_connected()
 
     def ensure_connected(self):
-        """Auto-reconnect if disconnected"""
+        """
+        Ensure the MQTT client is connected with automatic reconnection.
+        
+        Attempts to reconnect if disconnected, with throttling based on
+        reconnect_interval to prevent excessive reconnection attempts.
+        
+        Returns
+        -------
+        bool
+            True if connected after this call, False otherwise.
+        
+        Notes
+        -----
+        This method is throttled to prevent excessive reconnection attempts.
+        It will only attempt reconnection if the reconnect_interval has
+        elapsed since the last attempt.
+        """
         if not self.is_connected():
             current_time = time.time()
             if current_time - self.last_reconnect >= self.reconnect_interval:
@@ -40,6 +120,18 @@ class MQTTClient:
         return self.is_connected()
 
     def connect(self):
+        """
+        Establish a connection to the MQTT broker.
+        
+        Connects to the MQTT broker and starts the network loop in a
+        background thread for handling network traffic.
+        
+        Notes
+        -----
+        This method starts a background thread for network operations.
+        The loop is only started once to avoid multiple threads.
+        Connection errors are caught and printed to stdout.
+        """
         try:
             self.client.connect(self.broker, self.port)
             if not self.loop_started:
@@ -52,7 +144,31 @@ class MQTTClient:
 
     def publish_sensors(self, data: dict):
         """
-        Publishes each sensor value to its own topic.
+        Publish sensor data to individual MQTT topics.
+        
+        Publishes each sensor value to its own topic under the
+        'greenhouse/sensors/' hierarchy.
+        
+        Parameters
+        ----------
+        data : dict
+            Dictionary containing sensor names as keys and their values.
+            Each key-value pair is published to 'greenhouse/sensors/{key}'.
+        
+        Examples
+        --------
+        >>> client.publish_sensors({
+        ...     'temperature': 25.5,
+        ...     'humidity': 60.2,
+        ...     'co2': 400.0,
+        ...     'light': 850.0,
+        ...     'moisture': 45.0
+        ... })
+        [MQTT] Published greenhouse/sensors/temperature -> 25.5
+        [MQTT] Published greenhouse/sensors/humidity -> 60.2
+        [MQTT] Published greenhouse/sensors/co2 -> 400.0
+        [MQTT] Published greenhouse/sensors/light -> 850.0
+        [MQTT] Published greenhouse/sensors/moisture -> 45.0
         """
         for key, value in data.items():
             topic = f"greenhouse/sensors/{key}"
@@ -63,7 +179,19 @@ class MQTTClient:
 
     def publish_status(self, status: str):
         """
-        Publishes system status (e.g., ONLINE, OFFLINE, ERROR)
+        Publish the system status to the MQTT broker.
+        
+        Publishes the system status to the 'greenhouse/system/status' topic.
+        
+        Parameters
+        ----------
+        status : str
+            The system status string (e.g., 'ONLINE', 'OFFLINE', 'ERROR').
+        
+        Examples
+        --------
+        >>> client.publish_status('ONLINE')
+        [MQTT] Published greenhouse/system/status -> ONLINE
         """
         topic = "greenhouse/system/status"
         self.client.publish(topic, status)
@@ -71,6 +199,17 @@ class MQTTClient:
 
 
     def disconnect(self):
+        """
+        Disconnect from the MQTT broker and stop the network loop.
+        
+        Cleanly shuts down the MQTT client by stopping the network loop
+        and disconnecting from the broker.
+        
+        Notes
+        -----
+        This method should be called when the MQTT client is no longer
+        needed or before program termination to properly release resources.
+        """
         self.client.loop_stop()
         self.client.disconnect()
         print("[MQTT] Disconnected from broker")
