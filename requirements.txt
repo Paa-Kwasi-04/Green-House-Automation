@@ -1,3 +1,5 @@
 paho-mqtt
 pyserial
-
+scikit-fuzzy
+numpy
+networkx
