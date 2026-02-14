@@ -8,7 +8,11 @@ to publish sensor data and system status to an MQTT broker.
 import paho.mqtt.client as mqtt
 import json
 import time
-from serial_comm import SerialComm
+
+try:
+    from communication.serial_comm import SerialComm
+except ImportError:
+    from serial_comm import SerialComm
 
 
 class MQTTClient:

@@ -239,29 +239,41 @@ class FuzzyController:
         }
 
 def main():
-    """Run a simple simulation loop and print PWM outputs."""
+    """Read live serial data and print PWM outputs."""
     import time
+    import os
+    import sys
+
+    src_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if src_root not in sys.path:
+        sys.path.insert(0, src_root)
+
+    try:
+        from communication.serial_comm import SerialComm
+    except ImportError:
+        from serial_comm import SerialComm
 
     controller = FuzzyController()
-    t = 0.0
+    serial_comm = SerialComm(port="COM3", baudrate=115200, timeout=1, reconnect_interval=0.5)
+
+    serial_comm.connect()
+    print("[INFO] Starting fuzzy controller loop...")
 
     try:
         while True:
-            sensor_data = {
-                "temperature": 25 + 3 * np.sin(t),
-                "humidity": 85 + 10 * np.cos(t / 2),
-                "co2": 800 + 200 * np.sin(t / 3),
-                "light": 150 + 80 * np.cos(t / 4),
-                "moisture": 65 + 15 * np.sin(t / 5),
-            }
-
-            outputs = controller.compute(sensor_data)
-            print(outputs)
-
-            t += 0.1
-            time.sleep(0.5)
+            serial_comm.ensure_connected()
+            if serial_comm.is_connected():
+                line = serial_comm.data_reading()
+                if line:
+                    data = serial_comm.parse_data(line)
+                    if data:
+                        outputs = controller.compute(data)
+                        print(outputs)
+            time.sleep(0.1)
     except KeyboardInterrupt:
-        print("[INFO] Stopping simulation...")
+        print("[INFO] Stopping fuzzy controller...")
+    finally:
+        serial_comm.close()
 
 if __name__ == "__main__":
     main()
