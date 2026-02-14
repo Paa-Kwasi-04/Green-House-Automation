@@ -147,23 +147,28 @@ class MQTTClient:
         Publish sensor data to individual MQTT topics.
         
         Publishes each sensor value to its own topic under the
-        'greenhouse/sensors/' hierarchy.
+        'greenhouse/sensors/' hierarchy. Timestamp data is published
+        to 'greenhouse/sensors/timestamp' with the date and time
+        data was received.
         
         Parameters
         ----------
         data : dict
             Dictionary containing sensor names as keys and their values.
             Each key-value pair is published to 'greenhouse/sensors/{key}'.
+            Includes 'timestamp' with the date/time data was received.
         
         Examples
         --------
         >>> client.publish_sensors({
+        ...     'timestamp': '2026-02-13 14:30:45.123',
         ...     'temperature': 25.5,
         ...     'humidity': 60.2,
         ...     'co2': 400.0,
         ...     'light': 850.0,
         ...     'moisture': 45.0
         ... })
+        [MQTT] Published greenhouse/sensors/timestamp -> 2026-02-13 14:30:45.123
         [MQTT] Published greenhouse/sensors/temperature -> 25.5
         [MQTT] Published greenhouse/sensors/humidity -> 60.2
         [MQTT] Published greenhouse/sensors/co2 -> 400.0

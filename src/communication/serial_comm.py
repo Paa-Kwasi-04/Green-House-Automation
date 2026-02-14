@@ -7,6 +7,7 @@ Arduino or other microcontrollers to read sensor data from the greenhouse.
 
 import serial
 import time
+from datetime import datetime
 from serial.tools import list_ports
 
 
@@ -235,6 +236,7 @@ class SerialComm:
             moisture = float(values[4])
 
             data = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
                 "temperature": temperature,
                 "humidity": humidity,
                 "co2": co2,
