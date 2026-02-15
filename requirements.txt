@@ -3,3 +3,6 @@ pyserial
 scikit-fuzzy
 numpy
 networkx
+logging
+datetime
+time

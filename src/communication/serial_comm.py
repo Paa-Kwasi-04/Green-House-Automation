@@ -7,8 +7,11 @@ Arduino or other microcontrollers to read sensor data from the greenhouse.
 
 import serial
 import time
+import logging
 from datetime import datetime
 from serial.tools import list_ports
+
+logger = logging.getLogger(__name__)
 
 
 class SerialComm:
@@ -57,6 +60,8 @@ class SerialComm:
         self.max_retries = max_retries
         self.ser = None
         self.last_reconnect_attempt = 0
+        self.reconnect_logged = False  # Track if we've logged this reconnection attempt
+        self.connection_error_logged = False  # Track if we've logged connection errors this session
 
     def is_connected(self):
         """
@@ -108,7 +113,7 @@ class SerialComm:
                     candidate_ports.append(port)
 
             if not candidate_ports:
-                print("[ERROR] No serial ports detected.")
+                logger.error("No serial ports detected")
                 return False
 
             for port in candidate_ports:
@@ -120,16 +125,20 @@ class SerialComm:
                     )
                     time.sleep(2)
                     self.port = port
-                    print(f"[INFO] Connected to {self.port}")
+                    logger.info(f"Connected to serial port {self.port}")
+                    self.connection_error_logged = False  # Reset error flag on successful connection
                     return True
                 except serial.SerialException:
                     self.ser = None
                     continue
 
-            print("[ERROR] Could not open any detected serial port.")
+            # Log connection failure only once per session
+            if not self.connection_error_logged:
+                logger.error("Could not open any detected serial port")
+                self.connection_error_logged = True
             return False
         except Exception as e:
-            print(f"[ERROR] Serial connection failed: {e}")
+            logger.error(f"Serial connection failed: {e}")
             self.ser = None
             return False
 
@@ -152,15 +161,21 @@ class SerialComm:
         reconnect_interval has elapsed since the last attempt.
         """
         if self.is_connected():
+            self.reconnect_logged = False  # Reset flag when successfully connected
             return True
 
         current_time = time.time()
         if current_time - self.last_reconnect_attempt >= self.reconnect_interval:
-            print(f"[SERIAL] Attempting to reconnect to {self.port}...")
+            # Log only once per reconnection session
+            if not self.reconnect_logged:
+                logger.info(f"Attempting to reconnect to {self.port}...")
+                self.reconnect_logged = True
+            
             self.last_reconnect_attempt = current_time
             result = self.connect()
             if result:
-                print(f"[SERIAL] Successfully reconnected!")
+                logger.info(f"Successfully reconnected to {self.port}")
+                self.reconnect_logged = False  # Reset flag on successful connection
             return result
         
         return False
@@ -194,7 +209,7 @@ class SerialComm:
                 return line
             return None
         except Exception as e:
-            print(f"[ERROR] Serial read failed: {e}")
+            logger.error(f"Serial read failed: {e}")
             self.ser = None
             return None
         
@@ -236,29 +251,29 @@ class SerialComm:
             sections = line.split(';')
             
             if len(sections) != 2:
-                print(f"[WARNING] Invalid data format - expected 2 sections, got {len(sections)}")
+                logger.warning(f"Invalid data format - expected 2 sections, got {len(sections)}")
                 return None
             
             # Parse Controlled section
             controlled_section = sections[0]
             if not controlled_section.startswith("Controlled|"):
-                print("[WARNING] Missing 'Controlled|' prefix")
+                logger.warning("Missing 'Controlled|' prefix")
                 return None
             
             controlled_values = controlled_section.replace("Controlled|", "").split(',')
             if len(controlled_values) != 5:
-                print(f"[WARNING] Invalid controlled data - expected 5 values, got {len(controlled_values)}")
+                logger.warning(f"Invalid controlled data - expected 5 values, got {len(controlled_values)}")
                 return None
             
             # Parse Control section
             control_section = sections[1]
             if not control_section.startswith("Control|"):
-                print("[WARNING] Missing 'Control|' prefix")
+                logger.warning("Missing 'Control|' prefix")
                 return None
             
             control_values = control_section.replace("Control|", "").split(',')
             if len(control_values) != 5:
-                print(f"[WARNING] Invalid control data - expected 5 values, got {len(control_values)}")
+                logger.warning(f"Invalid control data - expected 5 values, got {len(control_values)}")
                 return None
             
             # Create data dictionary
@@ -282,7 +297,7 @@ class SerialComm:
 
             return data
         except Exception as e:
-            print(f"[ERROR] Data parsing failed: {e}")
+            logger.error(f"Data parsing failed: {e}")
             return None
 
     def close(self):
@@ -300,14 +315,19 @@ class SerialComm:
         try:
             if self.ser and self.ser.is_open:
                 self.ser.close()
-                print("[INFO] Serial connection closed")
+                logger.info("Serial connection closed")
         except serial.SerialException as e:
-            print(f"[ERROR] Could not close serial port: {e}")  
+            logger.error(f"Could not close serial port: {e}")  
         finally:
             self.ser = None 
 
 
-def main(): 
+def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
     serial_comm = SerialComm(port='COM3', baudrate=115200, timeout=1, reconnect_interval=2.0, max_retries=None)
     serial_comm.connect()
     try:
@@ -316,9 +336,9 @@ def main():
             if line:
                 data = serial_comm.parse_data(line)
                 if data:
-                    print(f"Received Data: {data}")
+                    logger.info(f"Received Data: {data}")
     except KeyboardInterrupt:
-        print("[INFO] Stopping serial communication...")
+        logger.info("Stopping serial communication...")
     finally:
         serial_comm.close()
 

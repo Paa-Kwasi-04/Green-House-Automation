@@ -1,13 +1,20 @@
 """Main entry point for greenhouse control system."""
 
 import time
-
+import logging
 from communication.mqtt import MQTTClient
 from communication.serial_comm import SerialComm
 from control.fuzzy_controller import FuzzyController
+from storage.logger import setup_logging
+from storage.data_storage import DataLogger, ControlOutputLogger
+
+logger = logging.getLogger(__name__)
 
 
 def main():
+	# Setup centralized logging with file rotation and date grouping
+	setup_logging(log_dir="logs", log_level=logging.INFO)
+	
 	# Configuration
 	broker = "test.mosquitto.org"
 	port = 1883
@@ -25,12 +32,16 @@ def main():
 	)
 	mqtt_client = MQTTClient(broker=broker, port=port)
 	controller = FuzzyController()
+	
+	# Initialize data storage
+	sensor_logger = DataLogger(data_dir="data", prefix="greenhouse")
+	control_logger = ControlOutputLogger(data_dir="data", prefix="training_data")
 
 	# Connect
 	mqtt_client.connect()
 	serial_comm.connect()
 
-	print("[INFO] Starting greenhouse control loop...")
+	logger.info("Starting greenhouse control loop...")
 
 	try:
 		last_status = None
@@ -43,7 +54,7 @@ def main():
 			# Status handling
 			current_status = "ONLINE" if serial_comm.is_connected() else "OFFLINE"
 			if current_status != last_status:
-				print(f"[STATUS CHANGE] Serial status: {last_status} -> {current_status}")
+				logger.info(f"Serial status changed: {last_status} -> {current_status}")
 				last_status = current_status
 
 			current_time = time.time()
@@ -57,18 +68,27 @@ def main():
 				if line:
 					data = serial_comm.parse_data(line)
 					if data:
+						# Log sensor data (both controlled and control)
+						sensor_logger.log_sensor_data(data)
+						
+						# Publish to MQTT
 						mqtt_client.publish_sensors(data)
-						data = data['controlled']
-						outputs = controller.compute(data)
-						print(f"[CONTROL] {outputs}")
+						
+						# Get controlled section and compute outputs
+						controlled_data = data['controlled']
+						outputs = controller.compute(controlled_data)
+						
+						# Log control cycle (sensors + outputs)
+						control_logger.log_control_cycle(controlled_data, outputs)
 
-			time.sleep(loop_delay)
 	except KeyboardInterrupt:
-		print("\n[INFO] Stopping greenhouse control loop...")
+		logger.info("Stopping greenhouse control loop...")
 	finally:
 		mqtt_client.disconnect()
 		serial_comm.close()
-		print("[INFO] Cleanup complete")
+		sensor_logger.close()
+		control_logger.close()
+		logger.info("Cleanup complete")
 
 
 if __name__ == "__main__":

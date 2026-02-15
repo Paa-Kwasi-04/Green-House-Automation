@@ -6,8 +6,10 @@ to publish sensor data and system status to an MQTT broker.
 """
 
 import paho.mqtt.client as mqtt
-import json
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     from communication.serial_comm import SerialComm
@@ -78,9 +80,9 @@ class MQTTClient:
         This method is automatically called by the paho-mqtt library.
         """
         if rc != 0:
-            print(f"[MQTT] Unexpected disconnection: {rc}")
+            logger.warning(f"Unexpected MQTT disconnection: {rc}")
         else:
-            print("[MQTT] Disconnected")
+            logger.info("MQTT disconnected")
 
     def is_connected(self):
         """
@@ -114,13 +116,13 @@ class MQTTClient:
         if not self.is_connected():
             current_time = time.time()
             if current_time - self.last_reconnect >= self.reconnect_interval:
-                print("[MQTT] Attempting to reconnect...")
+                logger.info("Attempting to reconnect to MQTT broker...")
                 try:
                     self.client.reconnect()
                     self.last_reconnect = current_time
-                    print("[MQTT] Reconnected to broker")
+                    logger.info("Reconnected to MQTT broker")
                 except Exception as e:
-                    print(f"[MQTT] Reconnect failed: {e}")
+                    logger.error(f"MQTT reconnect failed: {e}")
         return self.is_connected()
 
     def connect(self):
@@ -141,9 +143,9 @@ class MQTTClient:
             if not self.loop_started:
                 self.client.loop_start()  # Background networking thread
                 self.loop_started = True
-            print("[MQTT] Connected to broker")
+            logger.info(f"Connected to MQTT broker {self.broker}:{self.port}")
         except Exception as e:
-            print(f"[MQTT ERROR] Connection failed: {e}")
+            logger.error(f"MQTT connection failed: {e}")
 
 
     def publish_sensors(self, data: dict):
@@ -190,7 +192,6 @@ class MQTTClient:
             topic = "greenhouse/timestamp"
             payload = str(data['timestamp'])
             self.client.publish(topic, payload)
-            print(f"[MQTT] Published {topic} -> {payload}")
         
         # Publish controlled section data
         if 'controlled' in data:
@@ -198,7 +199,6 @@ class MQTTClient:
                 topic = f"greenhouse/controlled/{key}"
                 payload = str(value)
                 self.client.publish(topic, payload)
-                print(f"[MQTT] Published {topic} -> {payload}")
         
         # Publish control section data
         if 'control' in data:
@@ -206,7 +206,6 @@ class MQTTClient:
                 topic = f"greenhouse/control/{key}"
                 payload = str(value)
                 self.client.publish(topic, payload)
-                print(f"[MQTT] Published {topic} -> {payload}")
 
 
     def publish_status(self, status: str):
@@ -227,7 +226,6 @@ class MQTTClient:
         """
         topic = "greenhouse/system/status"
         self.client.publish(topic, status)
-        print(f"[MQTT] Published {topic} -> {status}")
 
 
     def disconnect(self):
@@ -244,10 +242,15 @@ class MQTTClient:
         """
         self.client.loop_stop()
         self.client.disconnect()
-        print("[MQTT] Disconnected from broker")
+        logger.info("Disconnected from MQTT broker")
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
     # Configuration
     BROKER = "test.mosquitto.org"  # Public MQTT broker
     PORT = 1883
@@ -264,7 +267,7 @@ def main():
     # Connect Serial
     serial_comm.connect()
     
-    print("[INFO] Starting sensor data publishing loop...")
+    logger.info("Starting sensor data publishing loop...")
     
     try:
         last_status = None
@@ -282,7 +285,7 @@ def main():
             
             # Log status changes
             if current_status != last_status:
-                print(f"[STATUS CHANGE] Serial status: {last_status} -> {current_status}")
+                logger.info(f"Serial status changed: {last_status} -> {current_status}")
                 last_status = current_status
             
             # Publish status only once per second (not every 0.1s)
@@ -294,7 +297,7 @@ def main():
             # Debug output every 50 iterations
             debug_counter += 1
             if debug_counter % 50 == 0:
-                print(f"[DEBUG] Serial connected: {serial_comm.is_connected()}, MQTT connected: {mqtt_client.is_connected()}")
+                logger.debug(f"Serial connected: {serial_comm.is_connected()}, MQTT connected: {mqtt_client.is_connected()}")
             
             # Read and publish sensor data if serial is connected
             if serial_comm.is_connected():
@@ -307,11 +310,11 @@ def main():
             time.sleep(0.1)  # Small delay to prevent CPU overload
             
     except KeyboardInterrupt:
-        print("\n[INFO] Stopping MQTT publisher...")
+        logger.info("Stopping MQTT publisher...")
     finally:
         mqtt_client.disconnect()
         serial_comm.close()
-        print("[INFO] Cleanup complete")
+        logger.info("Cleanup complete")
 
 
 if __name__ == "__main__":

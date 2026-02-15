@@ -6,7 +6,10 @@ to actuator PWM outputs for humidifier, fan, LED, and pump.
 
 import numpy as np
 import skfuzzy as fuzz
+import logging
 from skfuzzy import control as ctrl
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -253,11 +256,16 @@ def main():
     except ImportError:
         from serial_comm import SerialComm
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
     controller = FuzzyController()
     serial_comm = SerialComm(port="COM3", baudrate=115200, timeout=1, reconnect_interval=0.5)
 
     serial_comm.connect()
-    print("[INFO] Starting fuzzy controller loop...")
+    logger.info("Starting fuzzy controller loop...")
 
     try:
         while True:
@@ -270,11 +278,11 @@ def main():
                         # Use controlled section data for fuzzy logic
                         sensor_data = parsed_data['controlled']
                         outputs = controller.compute(sensor_data)
-                        print(f"[FUZZY] Inputs: T={sensor_data['temperature']:.1f}, H={sensor_data['humidity']:.1f}, CO2={sensor_data['co2']:.0f}, L={sensor_data['light']:.0f}, M={sensor_data['moisture']:.1f}")
-                        print(f"[FUZZY] Outputs: {outputs}")
+                        logger.info(f"Inputs: T={sensor_data['temperature']:.1f}, H={sensor_data['humidity']:.1f}, CO2={sensor_data['co2']:.0f}, L={sensor_data['light']:.0f}, M={sensor_data['moisture']:.1f}")
+                        logger.info(f"Outputs: {outputs}")
             time.sleep(0.1)
     except KeyboardInterrupt:
-        print("[INFO] Stopping fuzzy controller...")
+        logger.info("Stopping fuzzy controller...")
     finally:
         serial_comm.close()
 
