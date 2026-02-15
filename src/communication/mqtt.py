@@ -148,42 +148,65 @@ class MQTTClient:
 
     def publish_sensors(self, data: dict):
         """
-        Publish sensor data to individual MQTT topics.
+        Publish sensor data from both greenhouse sections to individual MQTT topics.
         
-        Publishes each sensor value to its own topic under the
-        'greenhouse/sensors/' hierarchy. Timestamp data is published
-        to 'greenhouse/sensors/timestamp' with the date and time
-        data was received.
+        Publishes sensor values from both the controlled (fuzzy logic) and control
+        (comparison) sections to separate topic hierarchies:
+        - Controlled section: 'greenhouse/controlled/{sensor}'
+        - Control section: 'greenhouse/control/{sensor}'
+        - Timestamp: 'greenhouse/timestamp'
         
         Parameters
         ----------
         data : dict
-            Dictionary containing sensor names as keys and their values.
-            Each key-value pair is published to 'greenhouse/sensors/{key}'.
-            Includes 'timestamp' with the date/time data was received.
+            Dictionary containing nested sensor data with structure:
+            {
+                'timestamp': str,
+                'controlled': {'temperature': float, 'humidity': float, 'co2': float, 
+                              'light': float, 'moisture': float},
+                'control': {'temperature': float, 'humidity': float, 'co2': float,
+                           'light': float, 'moisture': float}
+            }
         
         Examples
         --------
         >>> client.publish_sensors({
-        ...     'timestamp': '2026-02-13 14:30:45.123',
-        ...     'temperature': 25.5,
-        ...     'humidity': 60.2,
-        ...     'co2': 400.0,
-        ...     'light': 850.0,
-        ...     'moisture': 45.0
+        ...     'timestamp': '2026-02-15 14:30:45.123',
+        ...     'controlled': {'temperature': 25.5, 'humidity': 60.2, 'co2': 400.0,
+        ...                   'light': 850.0, 'moisture': 45.0},
+        ...     'control': {'temperature': 26.0, 'humidity': 58.5, 'co2': 420.0,
+        ...                'light': 830.0, 'moisture': 42.0}
         ... })
-        [MQTT] Published greenhouse/sensors/timestamp -> 2026-02-13 14:30:45.123
-        [MQTT] Published greenhouse/sensors/temperature -> 25.5
-        [MQTT] Published greenhouse/sensors/humidity -> 60.2
-        [MQTT] Published greenhouse/sensors/co2 -> 400.0
-        [MQTT] Published greenhouse/sensors/light -> 850.0
-        [MQTT] Published greenhouse/sensors/moisture -> 45.0
+        [MQTT] Published greenhouse/timestamp -> 2026-02-15 14:30:45.123
+        [MQTT] Published greenhouse/controlled/temperature -> 25.5
+        [MQTT] Published greenhouse/controlled/humidity -> 60.2
+        ...
+        [MQTT] Published greenhouse/control/temperature -> 26.0
+        [MQTT] Published greenhouse/control/humidity -> 58.5
+        ...
         """
-        for key, value in data.items():
-            topic = f"greenhouse/sensors/{key}"
-            payload = str(value)  # MQTT requires string/bytes
+        # Publish timestamp
+        if 'timestamp' in data:
+            topic = "greenhouse/timestamp"
+            payload = str(data['timestamp'])
             self.client.publish(topic, payload)
             print(f"[MQTT] Published {topic} -> {payload}")
+        
+        # Publish controlled section data
+        if 'controlled' in data:
+            for key, value in data['controlled'].items():
+                topic = f"greenhouse/controlled/{key}"
+                payload = str(value)
+                self.client.publish(topic, payload)
+                print(f"[MQTT] Published {topic} -> {payload}")
+        
+        # Publish control section data
+        if 'control' in data:
+            for key, value in data['control'].items():
+                topic = f"greenhouse/control/{key}"
+                payload = str(value)
+                self.client.publish(topic, payload)
+                print(f"[MQTT] Published {topic} -> {payload}")
 
 
     def publish_status(self, status: str):

@@ -200,48 +200,84 @@ class SerialComm:
         
     def parse_data(self, line: str):
         """
-        Parse a comma-separated line of sensor data.
+        Parse sensor data from two greenhouse sections.
         
-        Expects data in the format: temperature,humidity,co2,light,moisture
+        Expects data in the format:
+        Controlled|temp,humidity,co2,light,moisture;Control|temp,humidity,co2,light,moisture
+        
+        The "Controlled" section contains data from the greenhouse controlled by fuzzy logic.
+        The "Control" section contains data from the comparison greenhouse (no control).
         
         Parameters
         ----------
         line : str
-            A comma-separated string containing five sensor values.
+            A formatted string containing sensor data from both sections.
         
         Returns
         -------
         dict or None
             A dictionary containing parsed sensor data with keys:
-            'temperature', 'humidity', 'co2', 'light', and 'moisture'.
+            - 'timestamp': Current timestamp
+            - 'controlled': dict with 'temperature', 'humidity', 'co2', 'light', 'moisture'
+            - 'control': dict with 'temperature', 'humidity', 'co2', 'light', 'moisture'
             Returns None if parsing fails or data format is invalid.
         
         Examples
         --------
-        >>> serial_comm.parse_data("25.5,60.2,400.0,850.0,45.0")
-        {'temperature': 25.5, 'humidity': 60.2, 'co2': 400.0, 
-         'light': 850.0, 'moisture': 45.0}
+        >>> serial_comm.parse_data("Controlled|25.5,60.2,400.0,850.0,45.0;Control|26.0,58.5,420.0,830.0,42.0")
+        {'timestamp': '2026-02-15 14:30:25.123',
+         'controlled': {'temperature': 25.5, 'humidity': 60.2, 'co2': 400.0, 
+                       'light': 850.0, 'moisture': 45.0},
+         'control': {'temperature': 26.0, 'humidity': 58.5, 'co2': 420.0, 
+                    'light': 830.0, 'moisture': 42.0}}
         """
         try:
-            values = line.split(',')
+            # Split by semicolon to separate the two datasets
+            sections = line.split(';')
             
-            if len(values) != 5:
-                print("[WARNING] Invalid data format")
+            if len(sections) != 2:
+                print(f"[WARNING] Invalid data format - expected 2 sections, got {len(sections)}")
                 return None
             
-            temperature = float(values[0])
-            humidity = float(values[1])
-            co2 = float(values[2])
-            light = float(values[3])
-            moisture = float(values[4])
-
+            # Parse Controlled section
+            controlled_section = sections[0]
+            if not controlled_section.startswith("Controlled|"):
+                print("[WARNING] Missing 'Controlled|' prefix")
+                return None
+            
+            controlled_values = controlled_section.replace("Controlled|", "").split(',')
+            if len(controlled_values) != 5:
+                print(f"[WARNING] Invalid controlled data - expected 5 values, got {len(controlled_values)}")
+                return None
+            
+            # Parse Control section
+            control_section = sections[1]
+            if not control_section.startswith("Control|"):
+                print("[WARNING] Missing 'Control|' prefix")
+                return None
+            
+            control_values = control_section.replace("Control|", "").split(',')
+            if len(control_values) != 5:
+                print(f"[WARNING] Invalid control data - expected 5 values, got {len(control_values)}")
+                return None
+            
+            # Create data dictionary
             data = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                "temperature": temperature,
-                "humidity": humidity,
-                "co2": co2,
-                "light": light,
-                "moisture": moisture
+                "controlled": {
+                    "temperature": float(controlled_values[0]),
+                    "humidity": float(controlled_values[1]),
+                    "co2": float(controlled_values[2]),
+                    "light": float(controlled_values[3]),
+                    "moisture": float(controlled_values[4])
+                },
+                "control": {
+                    "temperature": float(control_values[0]),
+                    "humidity": float(control_values[1]),
+                    "co2": float(control_values[2]),
+                    "light": float(control_values[3]),
+                    "moisture": float(control_values[4])
+                }
             }
 
             return data

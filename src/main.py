@@ -58,6 +58,7 @@ def main():
 					data = serial_comm.parse_data(line)
 					if data:
 						mqtt_client.publish_sensors(data)
+						data = data['controlled']
 						outputs = controller.compute(data)
 						print(f"[CONTROL] {outputs}")
 

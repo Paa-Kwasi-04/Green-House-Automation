@@ -65,12 +65,12 @@ class FuzzyController:
 
         # Membership Functions
         temp_error['Cold'] = fuzz.trimf(temp_error.universe, [-5, -5, 0])
-        temp_error['Normal'] = fuzz.trimf(temp_error.universe, [-2, 0, 2])
+        temp_error['Normal'] = fuzz.trimf(temp_error.universe, [-1, 0, 1])
         temp_error['Hot'] = fuzz.trimf(temp_error.universe, [0, 5, 5])
 
-        hum_error['Wet'] = fuzz.trimf(hum_error.universe, [-30, -30, 0])
+        hum_error['Low'] = fuzz.trimf(hum_error.universe, [-30, -30, 0])
         hum_error['OK'] = fuzz.trimf(hum_error.universe, [-10, 0, 10])
-        hum_error['Dry'] = fuzz.trimf(hum_error.universe, [0, 30, 30])
+        hum_error['High'] = fuzz.trimf(hum_error.universe, [0, 30, 30])
 
         humidifier['OFF'] = fuzz.trimf(humidifier.universe, [0, 0, 25])
         humidifier['LOW'] = fuzz.trimf(humidifier.universe, [20, 40, 60])
@@ -78,12 +78,12 @@ class FuzzyController:
         humidifier['HIGH'] = fuzz.trimf(humidifier.universe, [80, 100, 100])
 
         rules = [
-            ctrl.Rule(hum_error['Wet'], humidifier['OFF']),
+            ctrl.Rule(hum_error['High'], humidifier['OFF']),
             ctrl.Rule(hum_error['OK'], humidifier['LOW']),
-            ctrl.Rule(hum_error['Dry'], humidifier['HIGH']),
-            ctrl.Rule(temp_error['Hot'] & hum_error['Dry'], humidifier['HIGH']),
-            ctrl.Rule(temp_error['Cold'] & hum_error['Wet'], humidifier['OFF']),
-            ctrl.Rule(temp_error['Normal'] & hum_error['Dry'], humidifier['MED'])
+            ctrl.Rule(hum_error['Low'], humidifier['HIGH']),
+            ctrl.Rule(temp_error['Hot'] & hum_error['Low'], humidifier['HIGH']),
+            ctrl.Rule(temp_error['Cold'] & hum_error['High'], humidifier['OFF']),
+            ctrl.Rule(temp_error['Normal'] & hum_error['Low'], humidifier['MED'])
         ]
 
         system = ctrl.ControlSystem(rules)
@@ -145,7 +145,7 @@ class FuzzyController:
         rules = [
             ctrl.Rule(light_error['Bright'], led['OFF']),
             ctrl.Rule(light_error['OK'], led['LOW']),
-            ctrl.Rule(light_error['Dark'], led['MEDIUM'])
+            ctrl.Rule(light_error['Dark'], led['HIGH'])
         ]
 
         system = ctrl.ControlSystem(rules)
@@ -196,12 +196,12 @@ class FuzzyController:
         L = sensor_data["light"]
         M = sensor_data["moisture"]
 
-        # Compute errors
+        # Compute errors (actual - setpoint)
         eT = T - self.T_set
-        eH = self.H_set - H
+        eH = H - self.H_set
         eCO2 = CO2 - self.CO2_set
-        eL = self.L_set - L
-        eM = self.M_set - M
+        eL = L - self.L_set
+        eM = M - self.M_set
 
         # HUMIDIFIER
         self.humidifier_sim.input['temp_error'] = eT
@@ -265,10 +265,13 @@ def main():
             if serial_comm.is_connected():
                 line = serial_comm.data_reading()
                 if line:
-                    data = serial_comm.parse_data(line)
-                    if data:
-                        outputs = controller.compute(data)
-                        print(outputs)
+                    parsed_data = serial_comm.parse_data(line)
+                    if parsed_data:
+                        # Use controlled section data for fuzzy logic
+                        sensor_data = parsed_data['controlled']
+                        outputs = controller.compute(sensor_data)
+                        print(f"[FUZZY] Inputs: T={sensor_data['temperature']:.1f}, H={sensor_data['humidity']:.1f}, CO2={sensor_data['co2']:.0f}, L={sensor_data['light']:.0f}, M={sensor_data['moisture']:.1f}")
+                        print(f"[FUZZY] Outputs: {outputs}")
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("[INFO] Stopping fuzzy controller...")
