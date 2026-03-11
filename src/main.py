@@ -1,6 +1,7 @@
 """Main entry point for greenhouse control system."""
 
 import time
+import os
 import logging
 from communication.mqtt import MQTTClient
 from communication.serial_comm import SerialComm
@@ -11,17 +12,58 @@ from storage.data_storage import DataLogger, ControlOutputLogger
 logger = logging.getLogger(__name__)
 
 
+def _get_env_int(name: str, default: int) -> int:
+	"""Read integer env var with fallback."""
+	try:
+		return int(os.getenv(name, str(default)))
+	except ValueError:
+		logger.warning("Invalid integer for %s. Using default: %s", name, default)
+		return default
+
+
+def _get_env_float(name: str, default: float) -> float:
+	"""Read float env var with fallback."""
+	try:
+		return float(os.getenv(name, str(default)))
+	except ValueError:
+		logger.warning("Invalid float for %s. Using default: %s", name, default)
+		return default
+
+
+def _get_env_bool(name: str, default: bool) -> bool:
+	"""Read boolean env var with fallback."""
+	value = os.getenv(name)
+	if value is None:
+		return default
+	return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def main():
 	# Setup centralized logging with file rotation and date grouping
 	setup_logging(log_dir="logs", log_level=logging.INFO)
 	
 	# Configuration
-	broker = "test.mosquitto.org"
-	port = 1883
-	serial_port = "COM3"
-	baudrate = 115200
-	status_publish_interval = 1.0
-	loop_delay = 0.1
+	broker = os.getenv("GREENHOUSE_MQTT_BROKER", "localhost")
+	port = _get_env_int("GREENHOUSE_MQTT_PORT", 1883)
+	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+	baudrate = _get_env_int("GREENHOUSE_SERIAL_BAUDRATE", 115200)
+	status_publish_interval = _get_env_float("GREENHOUSE_STATUS_INTERVAL", 1.0)
+	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
+	fallback_ports = os.getenv(
+		"GREENHOUSE_SERIAL_FALLBACKS",
+		"/dev/ttyACM0"
+	)
+	allow_onboard_uart = _get_env_bool("GREENHOUSE_ALLOW_ONBOARD_UART", False)
+	auto_discover_ports = _get_env_bool("GREENHOUSE_SERIAL_AUTO_DISCOVER", False)
+	preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
+
+	logger.info(
+		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud",
+		broker,
+		port,
+		serial_port,
+		baudrate,
+	)
 
 	# Initialize components
 	serial_comm = SerialComm(
@@ -29,6 +71,9 @@ def main():
 		baudrate=baudrate,
 		timeout=1,
 		reconnect_interval=0.5,
+		preferred_ports=preferred_ports,
+		allow_onboard_uart=allow_onboard_uart,
+		auto_discover_ports=auto_discover_ports,
 	)
 	mqtt_client = MQTTClient(broker=broker, port=port)
 	controller = FuzzyController()

@@ -8,6 +8,7 @@ Arduino or other microcontrollers to read sensor data from the greenhouse.
 import serial
 import time
 import logging
+import os
 from datetime import datetime
 from serial.tools import list_ports
 
@@ -52,16 +53,76 @@ class SerialComm:
         Timestamp of the last reconnection attempt.
     """
     
-    def __init__(self, port, baudrate=9600, timeout=1, reconnect_interval=0.5, max_retries=None):
+    def __init__(
+        self,
+        port,
+        baudrate=9600,
+        timeout=1,
+        reconnect_interval=0.5,
+        max_retries=None,
+        preferred_ports=None,
+        allow_onboard_uart=False,
+        auto_discover_ports=False,
+    ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.reconnect_interval = reconnect_interval
         self.max_retries = max_retries
+        self.preferred_ports = preferred_ports or []
+        self.allow_onboard_uart = allow_onboard_uart
+        self.auto_discover_ports = auto_discover_ports
         self.ser = None
         self.last_reconnect_attempt = 0
         self.reconnect_logged = False  # Track if we've logged this reconnection attempt
         self.connection_error_logged = False  # Track if we've logged connection errors this session
+
+    @staticmethod
+    def _normalize_port_path(port: str) -> str:
+        """Normalize serial device path for reliable comparisons."""
+        return port.rstrip("/") if isinstance(port, str) else port
+
+    @staticmethod
+    def _is_onboard_uart_port(port: str) -> bool:
+        """Return True for Raspberry Pi onboard UART device paths."""
+        normalized = SerialComm._normalize_port_path(port)
+        return normalized in {"/dev/serial0", "/dev/ttyAMA0"}
+
+    def _candidate_ports(self):
+        """Build an ordered list of serial ports to try."""
+        candidates = []
+
+        for port in [self.port] + self.preferred_ports:
+            if port and port not in candidates:
+                candidates.append(port)
+
+        # Prefer USB serial adapters. Onboard UART is opt-in to avoid false positives.
+        linux_fallbacks = ["/dev/ttyUSB0", "/dev/ttyACM0"]
+        if self.allow_onboard_uart:
+            linux_fallbacks.extend(["/dev/serial0", "/dev/ttyAMA0"])
+
+        for port in linux_fallbacks:
+            if port not in candidates and os.path.exists(port):
+                candidates.append(port)
+
+        if self.auto_discover_ports:
+            for port in [p.device for p in list_ports.comports()]:
+                if port not in candidates:
+                    candidates.append(port)
+
+        if self.allow_onboard_uart:
+            return candidates
+
+        # Keep explicit user-selected port, otherwise filter out onboard UART paths.
+        filtered = []
+        for port in candidates:
+            if port == self.port:
+                filtered.append(port)
+                continue
+            if not self._is_onboard_uart_port(port):
+                filtered.append(port)
+
+        return filtered
 
     def is_connected(self):
         """
@@ -102,15 +163,7 @@ class SerialComm:
         This method will print connection status messages to stdout.
         """
         try:
-            candidate_ports = []
-
-            if self.port:
-                candidate_ports.append(self.port)
-
-            available_ports = [port.device for port in list_ports.comports()]
-            for port in available_ports:
-                if port not in candidate_ports:
-                    candidate_ports.append(port)
+            candidate_ports = self._candidate_ports()
 
             if not candidate_ports:
                 logger.error("No serial ports detected")
@@ -134,7 +187,11 @@ class SerialComm:
 
             # Log connection failure only once per session
             if not self.connection_error_logged:
-                logger.error("Could not open any detected serial port")
+                logger.error(
+                    "Could not open serial port. Tried: %s. "
+                    "On Raspberry Pi ensure the user is in the 'dialout' group.",
+                    ", ".join(candidate_ports) if candidate_ports else "none"
+                )
                 self.connection_error_logged = True
             return False
         except Exception as e:
@@ -328,7 +385,23 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    serial_comm = SerialComm(port='COM3', baudrate=115200, timeout=1, reconnect_interval=2.0, max_retries=None)
+    serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+    baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
+    allow_onboard_uart = os.getenv("GREENHOUSE_ALLOW_ONBOARD_UART", "false").strip().lower() in {"1", "true", "yes", "on"}
+    fallback_ports = os.getenv("GREENHOUSE_SERIAL_FALLBACKS", "/dev/ttyACM0")
+    auto_discover_ports = os.getenv("GREENHOUSE_SERIAL_AUTO_DISCOVER", "false").strip().lower() in {"1", "true", "yes", "on"}
+    preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
+
+    serial_comm = SerialComm(
+        port=serial_port,
+        baudrate=baudrate,
+        timeout=1,
+        reconnect_interval=2.0,
+        max_retries=None,
+        preferred_ports=preferred_ports,
+        allow_onboard_uart=allow_onboard_uart,
+        auto_discover_ports=auto_discover_ports,
+    )
     serial_comm.connect()
     try:
         while True:

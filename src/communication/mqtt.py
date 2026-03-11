@@ -8,13 +8,9 @@ to publish sensor data and system status to an MQTT broker.
 import paho.mqtt.client as mqtt
 import time
 import logging
+import os
 
 logger = logging.getLogger(__name__)
-
-try:
-    from communication.serial_comm import SerialComm
-except ImportError:
-    from serial_comm import SerialComm
 
 
 class MQTTClient:
@@ -246,16 +242,21 @@ class MQTTClient:
 
 
 def main():
+    # Support both module execution and direct script execution.
+    try:
+        from communication.serial_comm import SerialComm
+    except ModuleNotFoundError:
+        from serial_comm import SerialComm
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
     # Configuration
-    BROKER = "test.mosquitto.org"  # Public MQTT broker
-    PORT = 1883
-    SERIAL_PORT = "COM3"  
-    BAUDRATE = 115200
+    BROKER = os.getenv("GREENHOUSE_MQTT_BROKER", "localhost")
+    PORT = int(os.getenv("GREENHOUSE_MQTT_PORT", "1883"))
+    SERIAL_PORT = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+    BAUDRATE = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
     
     # Initialize components
     serial_comm = SerialComm(port=SERIAL_PORT, baudrate=BAUDRATE, timeout=1, reconnect_interval=0.5)

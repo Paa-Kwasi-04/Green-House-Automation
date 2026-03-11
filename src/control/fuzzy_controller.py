@@ -262,7 +262,22 @@ def main():
     )
     
     controller = FuzzyController()
-    serial_comm = SerialComm(port="COM3", baudrate=115200, timeout=1, reconnect_interval=0.5)
+    serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+    baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
+    fallback_ports = os.getenv("GREENHOUSE_SERIAL_FALLBACKS", "/dev/ttyACM0")
+    preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
+    allow_onboard_uart = os.getenv("GREENHOUSE_ALLOW_ONBOARD_UART", "false").strip().lower() in {"1", "true", "yes", "on"}
+    auto_discover_ports = os.getenv("GREENHOUSE_SERIAL_AUTO_DISCOVER", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+    serial_comm = SerialComm(
+        port=serial_port,
+        baudrate=baudrate,
+        timeout=1,
+        reconnect_interval=0.5,
+        preferred_ports=preferred_ports,
+        allow_onboard_uart=allow_onboard_uart,
+        auto_discover_ports=auto_discover_ports,
+    )
 
     serial_comm.connect()
     logger.info("Starting fuzzy controller loop...")
