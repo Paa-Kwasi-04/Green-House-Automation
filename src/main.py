@@ -3,9 +3,11 @@
 import time
 import os
 import logging
+from datetime import datetime
 from communication.mqtt import MQTTClient
 from communication.serial_comm import SerialComm
 from control.fuzzy_controller import FuzzyController
+from sensor.camera import Camera
 from storage.logger import setup_logging
 from storage.data_storage import DataLogger, ControlOutputLogger
 
@@ -93,6 +95,12 @@ def main():
 	sensor_logger = DataLogger(data_dir=data_dir, prefix="greenhouse")
 	control_logger = ControlOutputLogger(data_dir=data_dir, prefix="training_data")
 
+	# Initialize camera
+	camera = Camera()
+
+	last_capture_day = None
+	capture_hour = 21  # 9 PM
+
 	# Connect
 	mqtt_client.connect()
 	serial_comm.connect()
@@ -117,6 +125,15 @@ def main():
 			if current_time - last_publish_time >= status_publish_interval:
 				mqtt_client.publish_status(current_status)
 				last_publish_time = current_time
+
+			now = datetime.now()
+
+			if now.hour == capture_hour:
+				
+				if last_capture_day != now.date():
+					image_path = camera.capture()
+					logger.info(f"Growth image captured: {image_path}")
+					last_capture_day = now.date()
 
 			# Read, parse, publish, compute control
 			if serial_comm.is_connected():
