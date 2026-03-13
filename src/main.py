@@ -12,6 +12,11 @@ from storage.data_storage import DataLogger, ControlOutputLogger
 logger = logging.getLogger(__name__)
 
 
+def _default_runtime_dir() -> str:
+	"""Default runtime output directory (parent of repository root)."""
+	return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
 def _get_env_int(name: str, default: int) -> int:
 	"""Read integer env var with fallback."""
 	try:
@@ -39,8 +44,12 @@ def _get_env_bool(name: str, default: bool) -> bool:
 
 
 def main():
+	runtime_dir = os.getenv("GREENHOUSE_RUNTIME_DIR", _default_runtime_dir())
+	log_dir = os.getenv("GREENHOUSE_LOG_DIR", os.path.join(runtime_dir, "logs"))
+	data_dir = os.getenv("GREENHOUSE_DATA_DIR", os.path.join(runtime_dir, "data"))
+
 	# Setup centralized logging with file rotation and date grouping
-	setup_logging(log_dir="logs", log_level=logging.INFO)
+	setup_logging(log_dir=log_dir, log_level=logging.INFO)
 	
 	# Configuration
 	broker = os.getenv("GREENHOUSE_MQTT_BROKER", "localhost")
@@ -58,11 +67,13 @@ def main():
 	preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
 
 	logger.info(
-		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud",
+		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud, data_dir=%s, log_dir=%s",
 		broker,
 		port,
 		serial_port,
 		baudrate,
+		data_dir,
+		log_dir,
 	)
 
 	# Initialize components
@@ -79,8 +90,8 @@ def main():
 	controller = FuzzyController()
 	
 	# Initialize data storage
-	sensor_logger = DataLogger(data_dir="data", prefix="greenhouse")
-	control_logger = ControlOutputLogger(data_dir="data", prefix="training_data")
+	sensor_logger = DataLogger(data_dir=data_dir, prefix="greenhouse")
+	control_logger = ControlOutputLogger(data_dir=data_dir, prefix="training_data")
 
 	# Connect
 	mqtt_client.connect()
