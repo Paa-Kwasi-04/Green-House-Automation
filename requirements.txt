@@ -1,8 +1,5 @@
-paho-mqtt
-pyserial
-scikit-fuzzy
-numpy
-networkx
-logging
-datetime
-time
+numpy==2.4.3
+paho-mqtt==2.1.0
+picamera2==0.3.34
+pyserial==3.5
+scikit-fuzzy==0.5.0
