@@ -7,6 +7,7 @@ from datetime import datetime
 from communication.mqtt import MQTTClient
 from communication.serial_comm import SerialComm
 from control.fuzzy_controller import FuzzyController
+from actuators import ActuatorDriver
 from sensor.camera import Camera
 from storage.logger import setup_logging
 from storage.data_storage import DataLogger, ControlOutputLogger
@@ -90,6 +91,7 @@ def main():
 	)
 	mqtt_client = MQTTClient(broker=broker, port=port)
 	controller = FuzzyController()
+	actuators = ActuatorDriver()
 	
 	# Initialize data storage
 	sensor_logger = DataLogger(data_dir=data_dir, prefix="greenhouse")
@@ -150,13 +152,17 @@ def main():
 						# Get controlled section and compute outputs
 						controlled_data = data['controlled']
 						outputs = controller.compute(controlled_data)
+						actuators.apply_outputs(outputs)
 						
 						# Log control cycle (sensors + outputs)
 						control_logger.log_control_cycle(controlled_data, outputs)
 
+			time.sleep(loop_delay)
+
 	except KeyboardInterrupt:
 		logger.info("Stopping greenhouse control loop...")
 	finally:
+		actuators.cleanup()
 		mqtt_client.disconnect()
 		serial_comm.close()
 		sensor_logger.close()
