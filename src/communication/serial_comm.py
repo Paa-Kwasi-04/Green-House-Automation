@@ -31,8 +31,6 @@ class SerialComm:
         Read timeout in seconds (default is 1).
     reconnect_interval : float, optional
         Time in seconds between reconnection attempts (default is 0.5).
-    max_retries : int or None, optional
-        Maximum number of reconnection attempts. None for unlimited (default is None).
     
     Attributes
     ----------
@@ -44,8 +42,6 @@ class SerialComm:
         Read timeout in seconds.
     reconnect_interval : float
         Time between reconnection attempts.
-    max_retries : int or None
-        Maximum reconnection attempts.
     ser : serial.Serial or None
         The serial connection object.
     last_reconnect_attempt : float
@@ -58,13 +54,11 @@ class SerialComm:
         baudrate=9600,
         timeout=1,
         reconnect_interval=0.5,
-        max_retries=None,
     ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.reconnect_interval = reconnect_interval
-        self.max_retries = max_retries
         self.ser = None
         self.last_reconnect_attempt = 0
         self.reconnect_logged = False  # Track if we've logged this reconnection attempt
@@ -357,8 +351,7 @@ def main():
         port=serial_port,
         baudrate=baudrate,
         timeout=1,
-        reconnect_interval=2.0,
-        max_retries=None,
+        reconnect_interval=0.5,
     )
     serial_comm.connect()
     try:

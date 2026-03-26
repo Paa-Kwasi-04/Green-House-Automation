@@ -16,32 +16,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict
+from gpiozero import PWMOutputDevice  # type: ignore[import-not-found]
 
 logger = logging.getLogger(__name__)
-
-
-try:
-	from gpiozero import PWMOutputDevice  # type: ignore[import-not-found]
-	_GPIOZERO_AVAILABLE = True
-except ImportError:
-	_GPIOZERO_AVAILABLE = False
-
-	class PWMOutputDevice:  # type: ignore[no-redef]
-		"""Mock gpiozero PWMOutputDevice for non-Pi environments."""
-
-		def __init__(self, pin: int, *, frequency: int = 1000, initial_value: float = 0.0):
-			self.pin = pin
-			self.frequency = frequency
-			self.value = initial_value
-
-		def on(self) -> None:
-			self.value = 1.0
-
-		def off(self) -> None:
-			self.value = 0.0
-
-		def close(self) -> None:
-			self.value = 0.0
 
 
 class ActuatorDriver:
@@ -62,15 +39,9 @@ class ActuatorDriver:
 		self.pwm_frequency = pwm_frequency
 		self._pwm_channels: Dict[str, PWMOutputDevice] = {}
 		self._is_initialized = False
-		self._hardware_gpio = _GPIOZERO_AVAILABLE
 		self._initialize_gpio()
 
 	def _initialize_gpio(self) -> None:
-		if not self._hardware_gpio:
-			logger.warning(
-				"gpiozero is not available. Running actuator driver in mock mode."
-			)
-
 		for name, pin in self.PINS.items():
 			device = PWMOutputDevice(
 				pin,
@@ -159,47 +130,13 @@ def main() -> None:
 		format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 	)
 
-	try:
-		from communication.serial_comm import SerialComm
-	except ModuleNotFoundError:
-		# Allow running this file directly via: python actuators/actuators.py
-		src_root = Path(__file__).resolve().parent.parent
-		if str(src_root) not in sys.path:
-			sys.path.insert(0, str(src_root))
-		from communication.serial_comm import SerialComm
+	# Ensure src directory is in path for direct script execution
+	src_root = Path(__file__).resolve().parent.parent
+	if str(src_root) not in sys.path:
+		sys.path.insert(0, str(src_root))
 
-	try:
-		from control.fuzzy_controller import FuzzyController
-	except ModuleNotFoundError as exc:
-		logger.warning(
-			"FuzzyController unavailable (%s). Using fallback test controller.",
-			exc,
-		)
-
-		class FuzzyController:  # type: ignore[no-redef]
-			"""Fallback controller for actuator testing without scikit-fuzzy."""
-
-			@staticmethod
-			def _to_pwm(value: float) -> int:
-				return int(max(0.0, min(255.0, value)))
-
-			def compute(self, sensors: Dict[str, float]) -> Dict[str, int]:
-				temp = float(sensors.get("temperature", 25.0))
-				humidity = float(sensors.get("humidity", 55.0))
-				light = float(sensors.get("light", 500.0))
-				moisture = float(sensors.get("moisture", 50.0))
-
-				fan_pwm = self._to_pwm((temp - 22.0) * 12.0 + (humidity - 60.0) * 3.0)
-				humidifier_pwm = self._to_pwm((60.0 - humidity) * 6.0)
-				led_pwm = self._to_pwm((700.0 - light) * 0.35)
-				pump_pwm = self._to_pwm((45.0 - moisture) * 6.0)
-
-				return {
-					"humidifier_pwm": humidifier_pwm,
-					"fan_pwm": fan_pwm,
-					"led_pwm": led_pwm,
-					"pump_pwm": pump_pwm,
-				}
+	from communication.serial_comm import SerialComm
+	from control.fuzzy_controller import FuzzyController
 
 	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
 	baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
