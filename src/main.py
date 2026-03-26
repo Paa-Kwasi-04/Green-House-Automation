@@ -38,14 +38,6 @@ def _get_env_float(name: str, default: float) -> float:
 		return default
 
 
-def _get_env_bool(name: str, default: bool) -> bool:
-	"""Read boolean env var with fallback."""
-	value = os.getenv(name)
-	if value is None:
-		return default
-	return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def main():
 	runtime_dir = os.getenv("GREENHOUSE_RUNTIME_DIR", _default_runtime_dir())
 	log_dir = os.getenv("GREENHOUSE_LOG_DIR", os.path.join(runtime_dir, "logs"))
@@ -63,13 +55,6 @@ def main():
 	baudrate = _get_env_int("GREENHOUSE_SERIAL_BAUDRATE", 115200)
 	status_publish_interval = _get_env_float("GREENHOUSE_STATUS_INTERVAL", 1.0)
 	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
-	fallback_ports = os.getenv(
-		"GREENHOUSE_SERIAL_FALLBACKS",
-		"/dev/ttyACM0"
-	)
-	allow_onboard_uart = _get_env_bool("GREENHOUSE_ALLOW_ONBOARD_UART", False)
-	auto_discover_ports = _get_env_bool("GREENHOUSE_SERIAL_AUTO_DISCOVER", False)
-	preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
 
 	logger.info(
 		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s",
@@ -89,9 +74,6 @@ def main():
 		baudrate=baudrate,
 		timeout=1,
 		reconnect_interval=0.5,
-		preferred_ports=preferred_ports,
-		allow_onboard_uart=allow_onboard_uart,
-		auto_discover_ports=auto_discover_ports,
 	)
 	mqtt_client = MQTTClient(broker=broker, port=port)
 	controller = FuzzyController()

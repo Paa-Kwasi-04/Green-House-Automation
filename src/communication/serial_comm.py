@@ -10,7 +10,6 @@ import time
 import logging
 import os
 from datetime import datetime
-from serial.tools import list_ports
 
 logger = logging.getLogger(__name__)
 
@@ -60,69 +59,35 @@ class SerialComm:
         timeout=1,
         reconnect_interval=0.5,
         max_retries=None,
-        preferred_ports=None,
-        allow_onboard_uart=False,
-        auto_discover_ports=False,
     ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.reconnect_interval = reconnect_interval
         self.max_retries = max_retries
-        self.preferred_ports = preferred_ports or []
-        self.allow_onboard_uart = allow_onboard_uart
-        self.auto_discover_ports = auto_discover_ports
         self.ser = None
         self.last_reconnect_attempt = 0
         self.reconnect_logged = False  # Track if we've logged this reconnection attempt
         self.connection_error_logged = False  # Track if we've logged connection errors this session
 
-    @staticmethod
-    def _normalize_port_path(port: str) -> str:
-        """Normalize serial device path for reliable comparisons."""
-        return port.rstrip("/") if isinstance(port, str) else port
-
-    @staticmethod
-    def _is_onboard_uart_port(port: str) -> bool:
-        """Return True for Raspberry Pi onboard UART device paths."""
-        normalized = SerialComm._normalize_port_path(port)
-        return normalized in {"/dev/serial0", "/dev/ttyAMA0"}
-
     def _candidate_ports(self):
-        """Build an ordered list of serial ports to try."""
+        """Build an ordered list of serial ports to try.
+
+        To keep runtime behavior predictable, only USB serial device paths
+        are considered: /dev/ttyUSB0 and /dev/ttyACM0.
+        """
+        allowed_ports = ["/dev/ttyUSB0", "/dev/ttyACM0"]
         candidates = []
 
-        for port in [self.port] + self.preferred_ports:
-            if port and port not in candidates:
-                candidates.append(port)
+        # Keep explicit config first when it matches supported USB serial paths.
+        if self.port in allowed_ports:
+            candidates.append(self.port)
 
-        # Prefer USB serial adapters. Onboard UART is opt-in to avoid false positives.
-        linux_fallbacks = ["/dev/ttyUSB0", "/dev/ttyACM0"]
-        if self.allow_onboard_uart:
-            linux_fallbacks.extend(["/dev/serial0", "/dev/ttyAMA0"])
-
-        for port in linux_fallbacks:
+        for port in allowed_ports:
             if port not in candidates and os.path.exists(port):
                 candidates.append(port)
 
-        if self.auto_discover_ports:
-            for port in [p.device for p in list_ports.comports()]:
-                if port not in candidates:
-                    candidates.append(port)
-
-        if self.allow_onboard_uart:
-            return candidates
-
-        # Keep explicit user-selected port, otherwise filter out onboard UART paths.
-        filtered = []
-        for port in candidates:
-            if port == self.port:
-                filtered.append(port)
-                continue
-            if not self._is_onboard_uart_port(port):
-                filtered.append(port)
-
-        return filtered
+        return candidates
 
     def is_connected(self):
         """
@@ -387,10 +352,6 @@ def main():
     
     serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
     baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
-    allow_onboard_uart = os.getenv("GREENHOUSE_ALLOW_ONBOARD_UART", "false").strip().lower() in {"1", "true", "yes", "on"}
-    fallback_ports = os.getenv("GREENHOUSE_SERIAL_FALLBACKS", "/dev/ttyACM0")
-    auto_discover_ports = os.getenv("GREENHOUSE_SERIAL_AUTO_DISCOVER", "false").strip().lower() in {"1", "true", "yes", "on"}
-    preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
 
     serial_comm = SerialComm(
         port=serial_port,
@@ -398,9 +359,6 @@ def main():
         timeout=1,
         reconnect_interval=2.0,
         max_retries=None,
-        preferred_ports=preferred_ports,
-        allow_onboard_uart=allow_onboard_uart,
-        auto_discover_ports=auto_discover_ports,
     )
     serial_comm.connect()
     try:

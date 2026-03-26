@@ -204,20 +204,6 @@ def main() -> None:
 	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
 	baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
 	loop_delay = float(os.getenv("GREENHOUSE_LOOP_DELAY", "0.1"))
-	allow_onboard_uart = os.getenv("GREENHOUSE_ALLOW_ONBOARD_UART", "false").strip().lower() in {
-		"1",
-		"true",
-		"yes",
-		"on",
-	}
-	fallback_ports = os.getenv("GREENHOUSE_SERIAL_FALLBACKS", "/dev/ttyACM0")
-	auto_discover_ports = os.getenv("GREENHOUSE_SERIAL_AUTO_DISCOVER", "false").strip().lower() in {
-		"1",
-		"true",
-		"yes",
-		"on",
-	}
-	preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
 
 	driver = ActuatorDriver()
 	controller = FuzzyController()
@@ -226,9 +212,6 @@ def main() -> None:
 		baudrate=baudrate,
 		timeout=1,
 		reconnect_interval=0.5,
-		preferred_ports=preferred_ports,
-		allow_onboard_uart=allow_onboard_uart,
-		auto_discover_ports=auto_discover_ports,
 	)
 	serial_comm.connect()
 	logger.info("Starting serial-driven actuator test routine")
