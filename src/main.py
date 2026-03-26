@@ -49,7 +49,9 @@ def _get_env_bool(name: str, default: bool) -> bool:
 def main():
 	runtime_dir = os.getenv("GREENHOUSE_RUNTIME_DIR", _default_runtime_dir())
 	log_dir = os.getenv("GREENHOUSE_LOG_DIR", os.path.join(runtime_dir, "logs"))
-	data_dir = os.getenv("GREENHOUSE_DATA_DIR", os.path.join(runtime_dir, "data"))
+	live_data_dir = os.getenv("GREENHOUSE_LIVE_DIR", os.path.join(runtime_dir, "live"))
+	weekly_data_dir = os.getenv("GREENHOUSE_WEEKLY_DIR", os.path.join(runtime_dir, "weekly"))
+	image_dir = os.getenv("GREENHOUSE_IMAGE_DIR", os.path.join(runtime_dir, "image"))
 
 	# Setup centralized logging with file rotation and date grouping
 	setup_logging(log_dir=log_dir, log_level=logging.INFO)
@@ -70,12 +72,14 @@ def main():
 	preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
 
 	logger.info(
-		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud, data_dir=%s, log_dir=%s",
+		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s",
 		broker,
 		port,
 		serial_port,
 		baudrate,
-		data_dir,
+		live_data_dir,
+		weekly_data_dir,
+		image_dir,
 		log_dir,
 	)
 
@@ -94,11 +98,19 @@ def main():
 	actuators = ActuatorDriver()
 	
 	# Initialize data storage
-	sensor_logger = DataLogger(data_dir=data_dir, prefix="greenhouse")
-	control_logger = ControlOutputLogger(data_dir=data_dir, prefix="training_data")
+	sensor_logger = DataLogger(
+		data_dir=live_data_dir,
+		prefix="greenhouse",
+		weekly_dir=weekly_data_dir,
+	)
+	control_logger = ControlOutputLogger(
+		data_dir=live_data_dir,
+		prefix="training_data",
+		weekly_dir=weekly_data_dir,
+	)
 
 	# Initialize camera
-	camera = Camera()
+	camera = Camera(image_dir=image_dir)
 
 	last_capture_day = None
 	capture_hour = 21  # 9 PM
@@ -143,6 +155,10 @@ def main():
 				if line:
 					data = serial_comm.parse_data(line)
 					if data:
+						# Weekly rollover keeps live files updating without manual interruption.
+						sensor_logger.rotate_weekly_if_needed(now=now)
+						control_logger.rotate_weekly_if_needed(now=now)
+
 						# Log sensor data (both controlled and control)
 						sensor_logger.log_sensor_data(data)
 						
