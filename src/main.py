@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from communication.mqtt import MQTTClient
 from communication.serial_comm import SerialComm
+from communication.http_image_server import ImageHTTPServer, post_image
 from control.fuzzy_controller import FuzzyController
 from actuators import ActuatorDriver
 from sensor.camera import Camera
@@ -44,6 +45,7 @@ def main():
 	live_data_dir = os.getenv("GREENHOUSE_LIVE_DIR", os.path.join(runtime_dir, "live"))
 	weekly_data_dir = os.getenv("GREENHOUSE_WEEKLY_DIR", os.path.join(runtime_dir, "weekly"))
 	image_dir = os.getenv("GREENHOUSE_IMAGE_DIR", os.path.join(runtime_dir, "image"))
+	http_upload_dir = os.getenv("GREENHOUSE_HTTP_UPLOAD_DIR", os.path.join(image_dir, "posted"))
 
 	# Setup centralized logging with file rotation and date grouping
 	setup_logging(log_dir=log_dir, log_level=logging.INFO)
@@ -55,9 +57,15 @@ def main():
 	baudrate = _get_env_int("GREENHOUSE_SERIAL_BAUDRATE", 115200)
 	status_publish_interval = _get_env_float("GREENHOUSE_STATUS_INTERVAL", 1.0)
 	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
+	http_enabled = os.getenv("GREENHOUSE_HTTP_ENABLED", "1").lower() not in {"0", "false", "no"}
+	http_host = os.getenv("GREENHOUSE_HTTP_HOST", "0.0.0.0")
+	http_port = _get_env_int("GREENHOUSE_HTTP_PORT", 8000)
+	post_timeout = _get_env_float("GREENHOUSE_POST_TIMEOUT", 5.0)
+	default_post_url = f"http://127.0.0.1:{http_port}/upload"
+	image_post_url = os.getenv("GREENHOUSE_POST_IMAGE_URL", default_post_url)
 
 	logger.info(
-		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s",
+		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s",
 		broker,
 		port,
 		serial_port,
@@ -66,6 +74,9 @@ def main():
 		weekly_data_dir,
 		image_dir,
 		log_dir,
+		http_host,
+		http_port,
+		http_enabled,
 	)
 
 	# Initialize components
@@ -93,9 +104,19 @@ def main():
 
 	# Initialize camera
 	camera = Camera(image_dir=image_dir)
+	http_server = None
+	if http_enabled:
+		http_server = ImageHTTPServer(host=http_host, port=http_port, upload_dir=http_upload_dir)
+		try:
+			http_server.start()
+			logger.info("HTTP image server started at http://%s:%s (upload_dir=%s)", http_host, http_port, http_upload_dir)
+		except OSError as exc:
+			logger.error("Unable to start HTTP image server: %s", exc)
+			http_server = None
 
 	last_capture_day = None
-	capture_hour = 21  # 9 PM
+	capture_hour = 21
+	capture_minute = 00  
 
 	# Connect
 	mqtt_client.connect()
@@ -124,11 +145,24 @@ def main():
 
 			now = datetime.now()
 
-			if now.hour == capture_hour:
+			if now.hour == capture_hour and now.minute == capture_minute:
 				
 				if last_capture_day != now.date():
 					image_path = camera.capture()
 					logger.info(f"Growth image captured: {image_path}")
+					if image_post_url:
+						try:
+							status_code, response_body = post_image(
+								image_path,
+								image_post_url,
+								timeout=post_timeout,
+							)
+							if 200 <= status_code < 300:
+								logger.info("Image posted to %s (status=%s): %s", image_post_url, status_code, response_body)
+							else:
+								logger.warning("Image post returned non-success status=%s: %s", status_code, response_body)
+						except Exception as exc:
+							logger.error("Failed to post image %s to %s: %s", image_path, image_post_url, exc)
 					last_capture_day = now.date()
 
 			# Read, parse, publish, compute control
@@ -160,6 +194,8 @@ def main():
 	except KeyboardInterrupt:
 		logger.info("Stopping greenhouse control loop...")
 	finally:
+		if http_server is not None:
+			http_server.stop()
 		actuators.cleanup()
 		mqtt_client.disconnect()
 		serial_comm.close()
