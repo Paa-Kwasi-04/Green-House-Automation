@@ -205,6 +205,9 @@ def main():
     BROKER = os.getenv("GREENHOUSE_MQTT_BROKER", "test.mosquitto.org")
     PORT = int(os.getenv("GREENHOUSE_MQTT_PORT", "1883"))
     DATA_TOPIC = os.getenv("GREENHOUSE_MQTT_DATA_TOPIC", "acity_greenhouse/paakwasi/data")
+    HTTP_PORT = int(os.getenv("GREENHOUSE_HTTP_PORT", "8000"))
+    IMAGE_URL = os.getenv("GREENHOUSE_IMAGE_URL", f"http://127.0.0.1:{HTTP_PORT}/latest")
+    STREAM_URL = os.getenv("GREENHOUSE_STREAM_URL", f"http://127.0.0.1:{HTTP_PORT}/stream")
     SERIAL_PORT = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
     BAUDRATE = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
     
@@ -254,7 +257,8 @@ def main():
                             "status": current_status,
                             "controlled": data.get("controlled", {}),
                             "control": data.get("control", {}),
-                            "image": None,
+                            "image": IMAGE_URL,
+                            "stream": STREAM_URL,
                         }
                         mqtt_client.publish_data_packet(packet)
             

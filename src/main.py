@@ -3,6 +3,8 @@
 import time
 import os
 import logging
+import shutil
+import socket
 from datetime import datetime
 from urllib.parse import quote
 from communication.mqtt import MQTTClient
@@ -40,6 +42,41 @@ def _get_env_float(name: str, default: float) -> float:
 		return default
 
 
+def _latest_served_image_url(upload_dir: str, image_base_url: str):
+	"""Return URL of the latest image currently available on the HTTP server."""
+	try:
+		if not os.path.isdir(upload_dir):
+			return None
+		candidates = []
+		for name in os.listdir(upload_dir):
+			if name.lower().endswith((".jpg", ".jpeg", ".png")):
+				full_path = os.path.join(upload_dir, name)
+				if os.path.isfile(full_path):
+					candidates.append(full_path)
+		if not candidates:
+			return None
+		latest = max(candidates, key=os.path.getmtime)
+		latest_name = os.path.basename(latest)
+		return f"{image_base_url.rstrip('/')}/{quote(latest_name)}"
+	except Exception as exc:
+		logger.warning("Unable to resolve latest served image: %s", exc)
+		return None
+
+
+def _detect_lan_ip() -> str:
+	"""Best-effort LAN IP detection for URLs shared to same-network clients."""
+	try:
+		with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+			# No packet is sent; connect() is used only to pick the outbound interface.
+			sock.connect(("8.8.8.8", 80))
+			ip = sock.getsockname()[0]
+			if ip and not ip.startswith("127."):
+				return ip
+	except OSError:
+		pass
+	return "127.0.0.1"
+
+
 def main():
 	runtime_dir = os.getenv("GREENHOUSE_RUNTIME_DIR", _default_runtime_dir())
 	log_dir = os.getenv("GREENHOUSE_LOG_DIR", os.path.join(runtime_dir, "logs"))
@@ -62,13 +99,32 @@ def main():
 	http_enabled = os.getenv("GREENHOUSE_HTTP_ENABLED", "1").lower() not in {"0", "false", "no"}
 	http_host = os.getenv("GREENHOUSE_HTTP_HOST", "0.0.0.0")
 	http_port = _get_env_int("GREENHOUSE_HTTP_PORT", 8000)
+	http_stream_fps = _get_env_float("GREENHOUSE_HTTP_STREAM_FPS", 6.0)
+	http_stream_width = _get_env_int("GREENHOUSE_HTTP_STREAM_WIDTH", 640)
+	http_stream_height = _get_env_int("GREENHOUSE_HTTP_STREAM_HEIGHT", 480)
+	raw_capture_hour = _get_env_int("GREENHOUSE_CAPTURE_HOUR", 21)
+	raw_capture_minute = _get_env_int("GREENHOUSE_CAPTURE_MINUTE", 0)
 	post_timeout = _get_env_float("GREENHOUSE_POST_TIMEOUT", 5.0)
+	http_public_host = os.getenv("GREENHOUSE_HTTP_PUBLIC_HOST", _detect_lan_ip())
 	default_post_url = f"http://127.0.0.1:{http_port}/upload"
 	image_post_url = os.getenv("GREENHOUSE_POST_IMAGE_URL", default_post_url)
-	image_base_url = os.getenv("GREENHOUSE_IMAGE_BASE_URL", f"http://127.0.0.1:{http_port}/images")
+	image_base_url = os.getenv("GREENHOUSE_IMAGE_BASE_URL", f"http://{http_public_host}:{http_port}/images")
+	default_stream_url = f"http://{http_public_host}:{http_port}/stream"
+	stream_url = os.getenv("GREENHOUSE_STREAM_URL", default_stream_url)
+
+	capture_hour = max(0, min(23, raw_capture_hour))
+	capture_minute = max(0, min(59, raw_capture_minute))
+	if (capture_hour, capture_minute) != (raw_capture_hour, raw_capture_minute):
+		logger.warning(
+			"Invalid capture schedule (%s:%s); clamped to %02d:%02d",
+			raw_capture_hour,
+			raw_capture_minute,
+			capture_hour,
+			capture_minute,
+		)
 
 	logger.info(
-		"Runtime config: MQTT=%s:%s topic=%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s",
+		"Runtime config: MQTT=%s:%s topic=%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s public_host=%s stream_fps=%.2f stream_size=%sx%s stream_url=%s capture=%02d:%02d",
 		broker,
 		port,
 		data_topic,
@@ -81,6 +137,13 @@ def main():
 		http_host,
 		http_port,
 		http_enabled,
+		http_public_host,
+		http_stream_fps,
+		http_stream_width,
+		http_stream_height,
+		stream_url,
+		capture_hour,
+		capture_minute,
 	)
 
 	# Initialize components
@@ -107,10 +170,16 @@ def main():
 	)
 
 	# Initialize camera
-	camera = Camera(image_dir=image_dir)
+	camera = Camera(image_dir=image_dir, stream_size=(http_stream_width, http_stream_height))
 	http_server = None
 	if http_enabled:
-		http_server = ImageHTTPServer(host=http_host, port=http_port, upload_dir=http_upload_dir)
+		http_server = ImageHTTPServer(
+			host=http_host,
+			port=http_port,
+			upload_dir=http_upload_dir,
+			frame_provider=camera.capture_frame_jpeg,
+			stream_fps=http_stream_fps,
+		)
 		try:
 			http_server.start()
 			logger.info("HTTP image server started at http://%s:%s (upload_dir=%s)", http_host, http_port, http_upload_dir)
@@ -119,9 +188,9 @@ def main():
 			http_server = None
 
 	last_capture_day = None
-	last_image_url = None
-	capture_hour = 21
-	capture_minute = 00  
+	last_image_url = _latest_served_image_url(http_upload_dir, image_base_url)
+	if last_image_url:
+		logger.info("Using last served image URL at startup: %s", last_image_url)
 
 	# Connect
 	mqtt_client.connect()
@@ -147,13 +216,13 @@ def main():
 
 			now = datetime.now()
 
-			if now.hour == capture_hour and now.minute == capture_minute:
-				
-				if last_capture_day != now.date():
+			today_capture_time = now.replace(hour=capture_hour, minute=capture_minute, second=0, microsecond=0)
+			if last_capture_day != now.date() and now >= today_capture_time:
 					image_path = camera.capture()
 					logger.info(f"Growth image captured: {image_path}")
 					image_name = os.path.basename(image_path)
-					last_image_url = f"{image_base_url.rstrip('/')}/{quote(image_name)}"
+					served_url = f"{image_base_url.rstrip('/')}/{quote(image_name)}"
+					posted_ok = False
 					if image_post_url:
 						try:
 							status_code, response_body = post_image(
@@ -163,10 +232,24 @@ def main():
 							)
 							if 200 <= status_code < 300:
 								logger.info("Image posted to %s (status=%s): %s", image_post_url, status_code, response_body)
+								posted_ok = True
 							else:
 								logger.warning("Image post returned non-success status=%s: %s", status_code, response_body)
 						except Exception as exc:
 							logger.error("Failed to post image %s to %s: %s", image_path, image_post_url, exc)
+
+					if posted_ok:
+						last_image_url = served_url
+					else:
+						# Keep /images URLs valid by copying the latest capture into the served upload directory.
+						try:
+							os.makedirs(http_upload_dir, exist_ok=True)
+							fallback_path = os.path.join(http_upload_dir, image_name)
+							shutil.copy2(image_path, fallback_path)
+							last_image_url = served_url
+							logger.warning("Image upload failed; copied capture to served directory: %s", fallback_path)
+						except Exception as exc:
+							logger.error("Failed to copy captured image to served directory: %s", exc)
 					last_capture_day = now.date()
 
 			# Read, parse, publish, compute control
@@ -201,6 +284,7 @@ def main():
 					"controlled": last_controlled,
 					"control": last_control,
 					"image": last_image_url,
+					"stream": stream_url,
 				}
 
 				# Publish one JSON payload packet to the configured MQTT topic.
@@ -214,6 +298,7 @@ def main():
 	finally:
 		if http_server is not None:
 			http_server.stop()
+		camera.shutdown()
 		actuators.cleanup()
 		mqtt_client.disconnect()
 		serial_comm.close()

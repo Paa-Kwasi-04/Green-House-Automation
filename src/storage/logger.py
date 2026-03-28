@@ -224,6 +224,10 @@ def setup_logging(log_dir: str = "logs", log_level: int = logging.INFO):
     for handler in root_logger.handlers:
         if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
             handler.setLevel(log_level)
+
+    # Reduce noise from verbose third-party camera libraries.
+    logging.getLogger("picamera2").setLevel(logging.WARNING)
+    logging.getLogger("picamera2.picamera2").setLevel(logging.WARNING)
     
     return root_logger
 

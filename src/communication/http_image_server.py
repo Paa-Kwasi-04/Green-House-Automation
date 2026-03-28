@@ -5,9 +5,10 @@ import logging
 import mimetypes
 import os
 import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 from urllib import request
 from urllib.parse import unquote, urlparse
 
@@ -17,22 +18,34 @@ logger = logging.getLogger(__name__)
 class ImageHTTPServer:
     """Small HTTP server to receive and serve camera images."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8000, upload_dir: str = "uploads"):
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8000,
+        upload_dir: str = "uploads",
+        frame_provider: Optional[Callable[[], bytes]] = None,
+        stream_fps: float = 2.0,
+    ):
         self.host = host
         self.port = port
         self.upload_dir = upload_dir
+        self.frame_provider = frame_provider
+        self.stream_fps = stream_fps
         os.makedirs(self.upload_dir, exist_ok=True)
 
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
 
     def start(self) -> None:
         """Start HTTP server in a background daemon thread."""
         if self._server is not None:
             return
 
-        handler = self._build_handler(self.upload_dir)
+        self._stop_event.clear()
+        handler = self._build_handler(self.upload_dir, self.frame_provider, self.stream_fps, self._stop_event)
         self._server = ThreadingHTTPServer((self.host, self.port), handler)
+        self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
@@ -41,6 +54,7 @@ class ImageHTTPServer:
         if self._server is None:
             return
 
+        self._stop_event.set()
         self._server.shutdown()
         self._server.server_close()
         if self._thread is not None:
@@ -50,7 +64,14 @@ class ImageHTTPServer:
         self._server = None
 
     @staticmethod
-    def _build_handler(upload_dir: str):
+    def _build_handler(
+        upload_dir: str,
+        frame_provider: Optional[Callable[[], bytes]],
+        stream_fps: float,
+        stop_event: threading.Event,
+    ):
+        frame_interval = 1.0 / max(stream_fps, 0.1)
+
         class _ImageHandler(BaseHTTPRequestHandler):
             def _send_html(self, status_code: int, html: str) -> None:
                 body = html.encode("utf-8")
@@ -131,12 +152,13 @@ class ImageHTTPServer:
 </head>
 <body>
     <main>
-        <h1>Greenhouse Camera - Latest Image</h1>
-        <p>Image auto-refreshes every 10 seconds.</p>
-        <img id=\"latest\" src=\"/latest?t=0\" alt=\"Latest greenhouse capture\" />
+        <h1>Greenhouse Camera</h1>
+        <p>Live stream is shown below. Use snapshot refresh to see the latest stored image.</p>
+        <img id=\"live\" src=\"/stream\" alt=\"Live greenhouse feed\" />
+        <img id=\"latest\" src=\"/latest?t=0\" alt=\"Latest greenhouse capture\" style=\"margin-top: 10px;\" />
         <div class=\"row\">
             <button id=\"refresh\" type=\"button\">Refresh now</button>
-            <span id=\"status\">Waiting for new image...</span>
+            <span id=\"status\">Live stream active</span>
         </div>
     </main>
     <script>
@@ -156,6 +178,47 @@ class ImageHTTPServer:
 </body>
 </html>
 """
+
+            def _stream_frames(self) -> None:
+                if frame_provider is None:
+                    self._send_json(503, {"error": "Live stream not configured"})
+                    return
+
+                boundary = "frame"
+                self.send_response(200)
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Connection", "close")
+                self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={boundary}")
+                self.end_headers()
+
+                try:
+                    while not stop_event.is_set():
+                        loop_start = time.time()
+                        frame = frame_provider()
+                        if not frame:
+                            time.sleep(frame_interval)
+                            continue
+
+                        self.wfile.write(f"--{boundary}\r\n".encode("ascii"))
+                        self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                        self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii"))
+                        self.wfile.write(frame)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+                        elapsed = time.time() - loop_start
+                        if elapsed < frame_interval:
+                            time.sleep(frame_interval - elapsed)
+                except (BrokenPipeError, ConnectionResetError):
+                    logger.debug("Live stream client disconnected")
+                except TypeError:
+                    # Camera may be tearing down while a stream client is connected.
+                    if not stop_event.is_set():
+                        logger.error("Live stream error: camera frame provider returned invalid data")
+                except Exception as exc:
+                    if not stop_event.is_set():
+                        logger.error("Live stream error: %s", exc)
 
             def _send_file(self, file_path: str) -> None:
                 content_type, _ = mimetypes.guess_type(file_path)
@@ -203,6 +266,10 @@ class ImageHTTPServer:
                     self._send_file(latest)
                     return
 
+                if request_path == "/stream":
+                    self._stream_frames()
+                    return
+
                 if request_path.startswith("/images/"):
                     image_name = os.path.basename(unquote(request_path.replace("/images/", "", 1)))
                     file_path = os.path.join(upload_dir, image_name)
@@ -216,7 +283,7 @@ class ImageHTTPServer:
                     200,
                     {
                         "message": "Greenhouse image server",
-                        "endpoints": ["GET /health", "GET /latest", "GET /images/<name>", "POST /upload"],
+                        "endpoints": ["GET /health", "GET /latest", "GET /stream", "GET /images/<name>", "POST /upload"],
                     },
                 )
 
