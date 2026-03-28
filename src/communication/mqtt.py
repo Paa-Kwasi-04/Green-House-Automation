@@ -9,6 +9,7 @@ import paho.mqtt.client as mqtt
 import time
 import logging
 import os
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +48,11 @@ class MQTTClient:
         Whether the MQTT client's network loop has been started.
     """
 
-    def __init__(self, broker, port=1883, client_id="greenhouse_pi"):
+    def __init__(self, broker, port=1883, client_id="greenhouse_pi", data_topic="acity_greenhouse/paakwasi/data"):
         self.broker = broker
         self.port = port
         self.client_id = client_id
+        self.data_topic = data_topic
         self.client = mqtt.Client(client_id=self.client_id)
         self.client.on_disconnect = self.on_disconnect
         self.reconnect_interval = 5.0  # seconds
@@ -144,84 +146,31 @@ class MQTTClient:
             logger.error(f"MQTT connection failed: {e}")
 
 
-    def publish_sensors(self, data: dict):
+    def publish_data_packet(self, packet: dict, topic: str = None, qos: int = 1, retain: bool = False):
         """
-        Publish sensor data from both greenhouse sections to individual MQTT topics.
-        
-        Publishes sensor values from both the controlled (fuzzy logic) and control
-        (comparison) sections to separate topic hierarchies:
-        - Controlled section: 'greenhouse/controlled/{sensor}'
-        - Control section: 'greenhouse/control/{sensor}'
-        - Timestamp: 'greenhouse/timestamp'
-        
+        Publish a single greenhouse JSON packet to one MQTT topic.
+
         Parameters
         ----------
-        data : dict
-            Dictionary containing nested sensor data with structure:
-            {
-                'timestamp': str,
-                'controlled': {'temperature': float, 'humidity': float, 'co2': float, 
-                              'light': float, 'moisture': float},
-                'control': {'temperature': float, 'humidity': float, 'co2': float,
-                           'light': float, 'moisture': float}
-            }
-        
-        Examples
-        --------
-        >>> client.publish_sensors({
-        ...     'timestamp': '2026-02-15 14:30:45.123',
-        ...     'controlled': {'temperature': 25.5, 'humidity': 60.2, 'co2': 400.0,
-        ...                   'light': 850.0, 'moisture': 45.0},
-        ...     'control': {'temperature': 26.0, 'humidity': 58.5, 'co2': 420.0,
-        ...                'light': 830.0, 'moisture': 42.0}
-        ... })
-        [MQTT] Published greenhouse/timestamp -> 2026-02-15 14:30:45.123
-        [MQTT] Published greenhouse/controlled/temperature -> 25.5
-        [MQTT] Published greenhouse/controlled/humidity -> 60.2
-        ...
-        [MQTT] Published greenhouse/control/temperature -> 26.0
-        [MQTT] Published greenhouse/control/humidity -> 58.5
-        ...
+        packet : dict
+            Dictionary payload with timestamp, status, sections, outputs, and image URL.
+        topic : str, optional
+            MQTT topic override. Uses configured data_topic when omitted.
+        qos : int, optional
+            MQTT QoS level (default 1).
+        retain : bool, optional
+            Retain flag (default False).
         """
-        # Publish timestamp
-        if 'timestamp' in data:
-            topic = "greenhouse/timestamp"
-            payload = str(data['timestamp'])
-            self.client.publish(topic, payload)
-        
-        # Publish controlled section data
-        if 'controlled' in data:
-            for key, value in data['controlled'].items():
-                topic = f"greenhouse/controlled/{key}"
-                payload = str(value)
-                self.client.publish(topic, payload)
-        
-        # Publish control section data
-        if 'control' in data:
-            for key, value in data['control'].items():
-                topic = f"greenhouse/control/{key}"
-                payload = str(value)
-                self.client.publish(topic, payload)
-
-
-    def publish_status(self, status: str):
-        """
-        Publish the system status to the MQTT broker.
-        
-        Publishes the system status to the 'greenhouse/system/status' topic.
-        
-        Parameters
-        ----------
-        status : str
-            The system status string (e.g., 'ONLINE', 'OFFLINE', 'ERROR').
-        
-        Examples
-        --------
-        >>> client.publish_status('ONLINE')
-        [MQTT] Published greenhouse/system/status -> ONLINE
-        """
-        topic = "greenhouse/system/status"
-        self.client.publish(topic, status)
+        resolved_topic = topic or self.data_topic
+        try:
+            payload = json.dumps(packet, ensure_ascii=True)
+            result = self.client.publish(resolved_topic, payload, qos=qos, retain=retain)
+            if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                logger.warning("Failed publishing packet to %s (rc=%s)", resolved_topic, result.rc)
+            return result
+        except Exception as exc:
+            logger.error("Failed to publish MQTT packet: %s", exc)
+            return None
 
 
     def disconnect(self):
@@ -253,14 +202,15 @@ def main():
     )
     
     # Configuration
-    BROKER = os.getenv("GREENHOUSE_MQTT_BROKER", "localhost")
+    BROKER = os.getenv("GREENHOUSE_MQTT_BROKER", "test.mosquitto.org")
     PORT = int(os.getenv("GREENHOUSE_MQTT_PORT", "1883"))
-    SERIAL_PORT = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+    DATA_TOPIC = os.getenv("GREENHOUSE_MQTT_DATA_TOPIC", "acity_greenhouse/paakwasi/data")
+    SERIAL_PORT = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
     BAUDRATE = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
     
     # Initialize components
     serial_comm = SerialComm(port=SERIAL_PORT, baudrate=BAUDRATE, timeout=1, reconnect_interval=0.5)
-    mqtt_client = MQTTClient(broker=BROKER, port=PORT)
+    mqtt_client = MQTTClient(broker=BROKER, port=PORT, data_topic=DATA_TOPIC)
     
     # Connect MQTT
     mqtt_client.connect()
@@ -272,7 +222,6 @@ def main():
     
     try:
         last_status = None
-        last_publish_time = 0
         debug_counter = 0
         while True:
             # Ensure MQTT connection is active
@@ -289,12 +238,6 @@ def main():
                 logger.info(f"Serial status changed: {last_status} -> {current_status}")
                 last_status = current_status
             
-            # Publish status only once per second (not every 0.1s)
-            current_time = time.time()
-            if current_time - last_publish_time >= 1.0:
-                mqtt_client.publish_status(current_status)
-                last_publish_time = current_time
-            
             # Debug output every 50 iterations
             debug_counter += 1
             if debug_counter % 50 == 0:
@@ -306,7 +249,14 @@ def main():
                 if line:
                     data = serial_comm.parse_data(line)
                     if data:
-                        mqtt_client.publish_sensors(data)
+                        packet = {
+                            "timestamp": data.get("timestamp"),
+                            "status": current_status,
+                            "controlled": data.get("controlled", {}),
+                            "control": data.get("control", {}),
+                            "image": None,
+                        }
+                        mqtt_client.publish_data_packet(packet)
             
             time.sleep(0.1)  # Small delay to prevent CPU overload
             

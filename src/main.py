@@ -4,6 +4,7 @@ import time
 import os
 import logging
 from datetime import datetime
+from urllib.parse import quote
 from communication.mqtt import MQTTClient
 from communication.serial_comm import SerialComm
 from communication.http_image_server import ImageHTTPServer, post_image
@@ -51,11 +52,12 @@ def main():
 	setup_logging(log_dir=log_dir, log_level=logging.INFO)
 	
 	# Configuration
-	broker = os.getenv("GREENHOUSE_MQTT_BROKER", "localhost")
+	broker = os.getenv("GREENHOUSE_MQTT_BROKER", "test.mosquitto.org")
 	port = _get_env_int("GREENHOUSE_MQTT_PORT", 1883)
-	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+	data_topic = os.getenv("GREENHOUSE_MQTT_DATA_TOPIC", "acity_greenhouse/paakwasi/data")
+	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
 	baudrate = _get_env_int("GREENHOUSE_SERIAL_BAUDRATE", 115200)
-	status_publish_interval = _get_env_float("GREENHOUSE_STATUS_INTERVAL", 1.0)
+	data_publish_interval = _get_env_float("GREENHOUSE_MQTT_PUBLISH_INTERVAL", 1.0)
 	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
 	http_enabled = os.getenv("GREENHOUSE_HTTP_ENABLED", "1").lower() not in {"0", "false", "no"}
 	http_host = os.getenv("GREENHOUSE_HTTP_HOST", "0.0.0.0")
@@ -63,11 +65,13 @@ def main():
 	post_timeout = _get_env_float("GREENHOUSE_POST_TIMEOUT", 5.0)
 	default_post_url = f"http://127.0.0.1:{http_port}/upload"
 	image_post_url = os.getenv("GREENHOUSE_POST_IMAGE_URL", default_post_url)
+	image_base_url = os.getenv("GREENHOUSE_IMAGE_BASE_URL", f"http://127.0.0.1:{http_port}/images")
 
 	logger.info(
-		"Runtime config: MQTT=%s:%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s",
+		"Runtime config: MQTT=%s:%s topic=%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s",
 		broker,
 		port,
+		data_topic,
 		serial_port,
 		baudrate,
 		live_data_dir,
@@ -86,7 +90,7 @@ def main():
 		timeout=1,
 		reconnect_interval=0.5,
 	)
-	mqtt_client = MQTTClient(broker=broker, port=port)
+	mqtt_client = MQTTClient(broker=broker, port=port, data_topic=data_topic)
 	controller = FuzzyController()
 	actuators = ActuatorDriver()
 	
@@ -115,6 +119,7 @@ def main():
 			http_server = None
 
 	last_capture_day = None
+	last_image_url = None
 	capture_hour = 21
 	capture_minute = 00  
 
@@ -127,6 +132,8 @@ def main():
 	try:
 		last_status = None
 		last_publish_time = 0.0
+		last_controlled = {}
+		last_control = {}
 		while True:
 			# Ensure connections are active
 			mqtt_client.ensure_connected()
@@ -138,11 +145,6 @@ def main():
 				logger.info(f"Serial status changed: {last_status} -> {current_status}")
 				last_status = current_status
 
-			current_time = time.time()
-			if current_time - last_publish_time >= status_publish_interval:
-				mqtt_client.publish_status(current_status)
-				last_publish_time = current_time
-
 			now = datetime.now()
 
 			if now.hour == capture_hour and now.minute == capture_minute:
@@ -150,6 +152,8 @@ def main():
 				if last_capture_day != now.date():
 					image_path = camera.capture()
 					logger.info(f"Growth image captured: {image_path}")
+					image_name = os.path.basename(image_path)
+					last_image_url = f"{image_base_url.rstrip('/')}/{quote(image_name)}"
 					if image_post_url:
 						try:
 							status_code, response_body = post_image(
@@ -178,16 +182,30 @@ def main():
 						# Log sensor data (both controlled and control)
 						sensor_logger.log_sensor_data(data)
 						
-						# Publish to MQTT
-						mqtt_client.publish_sensors(data)
-						
 						# Get controlled section and compute outputs
 						controlled_data = data['controlled']
+						control_data = data.get("control", {})
+						last_controlled = controlled_data
+						last_control = control_data
 						outputs = controller.compute(controlled_data)
 						actuators.apply_outputs(outputs)
 						
 						# Log control cycle (sensors + outputs)
 						control_logger.log_control_cycle(controlled_data, outputs)
+
+			current_time = time.time()
+			if current_time - last_publish_time >= data_publish_interval:
+				packet = {
+					"timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+					"status": current_status,
+					"controlled": last_controlled,
+					"control": last_control,
+					"image": last_image_url,
+				}
+
+				# Publish one JSON payload packet to the configured MQTT topic.
+				mqtt_client.publish_data_packet(packet, qos=1)
+				last_publish_time = current_time
 
 			time.sleep(loop_delay)
 

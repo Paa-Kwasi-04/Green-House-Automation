@@ -7,6 +7,7 @@ to actuator PWM outputs for humidifier, fan, LED, and pump.
 import numpy as np
 import skfuzzy as fuzz
 import logging
+import os
 from skfuzzy import control as ctrl
 
 logger = logging.getLogger(__name__)
@@ -42,15 +43,36 @@ class FuzzyController:
         Simulation for pump control.
     """
 
+    @staticmethod
+    def _get_env_float(name: str, default: float) -> float:
+        """Read float env var with fallback and warning on invalid values."""
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("Invalid float for %s=%r; using default %s", name, raw, default)
+            return default
+
     def __init__(self):
         """Initialize setpoints and build fuzzy control systems."""
 
-        # Setpoints
-        self.T_set = 25
-        self.H_set = 85
-        self.CO2_set = 800
-        self.L_set = 150
-        self.M_set = 65
+        # Setpoints (configurable via env vars, with stable defaults)
+        self.T_set = self._get_env_float("GREENHOUSE_SETPOINT_TEMPERATURE", 25.0)
+        self.H_set = self._get_env_float("GREENHOUSE_SETPOINT_HUMIDITY", 85.0)
+        self.CO2_set = self._get_env_float("GREENHOUSE_SETPOINT_CO2", 800.0)
+        self.L_set = self._get_env_float("GREENHOUSE_SETPOINT_LIGHT", 150.0)
+        self.M_set = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE", 65.0)
+
+        logger.info(
+            "Fuzzy setpoints: T=%.2f, H=%.2f, CO2=%.2f, L=%.2f, M=%.2f",
+            self.T_set,
+            self.H_set,
+            self.CO2_set,
+            self.L_set,
+            self.M_set,
+        )
 
         # Build systems
         self._build_humidifier()
@@ -262,7 +284,7 @@ def main():
     )
     
     controller = FuzzyController()
-    serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+    serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
     baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
 
     serial_comm = SerialComm(

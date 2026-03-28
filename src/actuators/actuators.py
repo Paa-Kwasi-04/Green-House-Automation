@@ -125,8 +125,11 @@ class ActuatorDriver:
 
 def main() -> None:
 	"""Run actuator test loop using live sensor data from serial communication."""
+	quiet = os.getenv("GREENHOUSE_ACTUATOR_QUIET", "0").lower() in {"1", "true", "yes"}
+	log_level = logging.WARNING if quiet else logging.INFO
+	
 	logging.basicConfig(
-		level=logging.INFO,
+		level=log_level,
 		format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 	)
 
@@ -138,7 +141,7 @@ def main() -> None:
 	from communication.serial_comm import SerialComm
 	from control.fuzzy_controller import FuzzyController
 
-	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
 	baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
 	loop_delay = float(os.getenv("GREENHOUSE_LOOP_DELAY", "0.1"))
 
@@ -151,7 +154,8 @@ def main() -> None:
 		reconnect_interval=0.5,
 	)
 	serial_comm.connect()
-	logger.info("Starting serial-driven actuator test routine")
+	if not quiet:
+		logger.info("Starting serial-driven actuator test routine")
 
 	try:
 		while True:
@@ -177,11 +181,13 @@ def main() -> None:
 				outputs,
 			)
 	except KeyboardInterrupt:
-		logger.info("Stopping actuator serial test loop...")
+		if not quiet:
+			logger.info("Stopping actuator serial test loop...")
 	finally:
 		driver.cleanup()
 		serial_comm.close()
-		logger.info("Actuator serial test routine complete")
+		if not quiet:
+			logger.info("Actuator serial test routine complete")
 
 
 if __name__ == "__main__":

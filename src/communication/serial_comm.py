@@ -63,6 +63,8 @@ class SerialComm:
         self.last_reconnect_attempt = 0
         self.reconnect_logged = False  # Track if we've logged this reconnection attempt
         self.connection_error_logged = False  # Track if we've logged connection errors this session
+        self.last_parse_error_log = 0  # Throttle parse error logging to avoid spam
+        self.parse_error_throttle_interval = 10.0  # Log parse errors at most once per 10 seconds
 
     def _candidate_ports(self):
         """Build an ordered list of serial ports to try.
@@ -267,29 +269,45 @@ class SerialComm:
             sections = line.split(';')
             
             if len(sections) != 2:
-                logger.warning(f"Invalid data format - expected 2 sections, got {len(sections)}")
+                # Throttle parse error logging to reduce spam
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning(f"Invalid data format - expected 2 sections, got {len(sections)}")
+                    self.last_parse_error_log = current_time
                 return None
             
             # Parse Controlled section
             controlled_section = sections[0]
             if not controlled_section.startswith("Controlled|"):
-                logger.warning("Missing 'Controlled|' prefix")
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning("Missing 'Controlled|' prefix")
+                    self.last_parse_error_log = current_time
                 return None
             
             controlled_values = controlled_section.replace("Controlled|", "").split(',')
             if len(controlled_values) != 5:
-                logger.warning(f"Invalid controlled data - expected 5 values, got {len(controlled_values)}")
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning(f"Invalid controlled data - expected 5 values, got {len(controlled_values)}")
+                    self.last_parse_error_log = current_time
                 return None
             
             # Parse Control section
             control_section = sections[1]
             if not control_section.startswith("Control|"):
-                logger.warning("Missing 'Control|' prefix")
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning("Missing 'Control|' prefix")
+                    self.last_parse_error_log = current_time
                 return None
             
             control_values = control_section.replace("Control|", "").split(',')
             if len(control_values) != 5:
-                logger.warning(f"Invalid control data - expected 5 values, got {len(control_values)}")
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning(f"Invalid control data - expected 5 values, got {len(control_values)}")
+                    self.last_parse_error_log = current_time
                 return None
             
             # Create data dictionary
@@ -344,7 +362,7 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+    serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
     baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
 
     serial_comm = SerialComm(
