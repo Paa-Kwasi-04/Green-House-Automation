@@ -1,18 +1,19 @@
 # Smart Mushroom Greenhouse Control System
 
-An IoT-based smart mushroom greenhouse automation system using a hybrid Arduino-Raspberry Pi architecture with fuzzy logic control. This project implements real-time environmental monitoring, automated control, and comparative data collection between controlled and uncontrolled greenhouse sections.
+An IoT-based smart mushroom greenhouse automation system using a hybrid Arduino-Raspberry Pi architecture with fuzzy logic control. This project implements real-time environmental monitoring, automated control, live camera streaming, and comparative data collection between controlled and uncontrolled greenhouse sections.
 
 ## System Overview
 
 ### Hardware Architecture
 - **Arduino Uno**: Sensor data acquisition from both greenhouse sections
-- **Raspberry Pi**: Fuzzy logic control, automation, MQTT publishing, and data logging
+- **Raspberry Pi**: Fuzzy logic control, automation, MQTT publishing, data logging, and camera streaming
 - **Control Method**: Mamdani fuzzy logic controllers (scikit-fuzzy)
-- **Actuators**: 
-  - Humidifier (PWM controlled)
-  - Exhaust fan (PWM controlled)
-  - LED grow lights (PWM controlled)
-  - Water pump (PWM controlled)
+- **Actuators** (PWM via gpiozero, BCM pin numbering):
+  - Fan 1 → GPIO 22
+  - Fan 2 → GPIO 17
+  - Peristaltic Pump → GPIO 4
+  - LED Grow Lights → GPIO 27
+  - Humidifier → GPIO 10
 
 ### Monitored Parameters
 - **Temperature** (°C)
@@ -42,28 +43,40 @@ This design enables data-driven comparison of automated vs. natural growing cond
   - Automatic reconnection on disconnect
   - Robust data parsing with validation
   - Expected format: `Controlled|T,H,CO2,L,M;Control|T,H,CO2,L,M`
-- **MQTT Publishing**: Real-time data to cloud broker
-  - Topic structure: `greenhouse/{controlled|control}/{sensor}`
-  - System status: `greenhouse/system/status`
-  - Default broker: `localhost` (configurable via `GREENHOUSE_MQTT_BROKER`)
+- **MQTT Publishing**: Real-time data as a single JSON packet
+  - Default broker: `test.mosquitto.org` (configurable via `GREENHOUSE_MQTT_BROKER`)
+  - Default topic: `acity_greenhouse/paakwasi/data` (configurable via `GREENHOUSE_MQTT_DATA_TOPIC`)
+  - Packet fields: `timestamp`, `status`, `controlled`, `control`, `image`, `stream`
 
 ### 3. Camera & Visual Monitoring
-- **Raspberry Pi Camera**: Daily growth image capture using `picamera2`
-  - Captures one image per day at 21:00 (9 PM)
-  - Images saved as `data/images/growth_<timestamp>.jpg`
-  - Prevents duplicate captures within the same day
+- **Raspberry Pi Camera**: Daily still capture and live MJPEG stream using `picamera2`
+  - Captures one high-resolution image per day at the configured time (default 21:00)
+  - Images saved under `<GREENHOUSE_IMAGE_DIR>/` and served via the built-in HTTP server
+  - Live MJPEG stream accessible at `http://<host>:<port>/stream` (default 6 fps, 640×480)
+  - Web viewer page available at `http://<host>:<port>/viewer`
 
-### 4. Data Logging & Storage
-- **CSV Data Storage**: Separate files for each greenhouse section
-  - `greenhouse_controlled.csv`: Controlled section sensor data
-  - `greenhouse_control.csv`: Control section sensor data
-  - `training_data.csv`: Sensor inputs + fuzzy controller outputs
+### 4. HTTP Image Server
+- Built-in HTTP server for camera image access and live streaming (default port 8000)
+- Endpoints:
+  - `GET /viewer` – browser-based viewer with live stream and latest snapshot
+  - `GET /stream` – MJPEG live stream
+  - `GET /latest` – latest captured image file
+  - `GET /images/<name>` – access a specific stored image by filename
+  - `POST /upload` – receive an image (raw bytes, `X-Filename` header for name)
+  - `GET /health` – server health check
+
+### 5. Data Logging & Storage
+- **CSV Data Storage**: Live files updated continuously, archived weekly
+  - `live/greenhouse_controlled.csv`: Controlled section sensor data
+  - `live/greenhouse_control.csv`: Control section sensor data
+  - `live/training_data.csv`: Sensor inputs + fuzzy controller outputs
+  - `weekly/<YYYY-WW>/`: Weekly archives of the above files
 - **Application Logging**: Rotating log files with date grouping
   - File: `logs/greenhouse.log`
   - Rotation: 10MB per file, max 5 files
   - Automatic date separators for readability
 
-### 5. Robust Error Handling
+### 6. Robust Error Handling
 - Automatic serial port reconnection
 - MQTT broker reconnection with throttling
 - Comprehensive logging for debugging
@@ -81,17 +94,18 @@ Green-House-Automation/
 ├── src/                         # Main application code
 │   ├── main.py                  # Main control loop entry point
 │   ├── actuators/               # Actuator control modules
-│   │   └── actuators.py
+│   │   └── actuators.py         # gpiozero PWM driver (BCM pins)
 │   ├── communication/           # Communication modules
 │   │   ├── serial_comm.py       # Arduino serial communication
-│   │   └── mqtt.py              # MQTT client for cloud publishing
+│   │   ├── mqtt.py              # MQTT client for cloud publishing
+│   │   └── http_image_server.py # HTTP server for images and live stream
 │   ├── control/                 # Control system modules
 │   │   └── fuzzy_controller.py  # Fuzzy logic controller (scikit-fuzzy)
 │   ├── sensor/                  # Sensor modules
-│   │   └── camera.py            # Raspberry Pi Camera (daily growth capture)
+│   │   └── camera.py            # Raspberry Pi Camera (still capture + streaming)
 │   └── storage/                 # Data logging modules
 │       ├── logger.py            # Application logging setup
-│       └── data_storage.py      # CSV data storage
+│       └── data_storage.py      # CSV data storage with weekly rotation
 ├── requirements.txt             # Python dependencies
 └── README.md                    # This file
 ```
@@ -101,7 +115,7 @@ Green-House-Automation/
 ### Prerequisites
 - Python 3.7+
 - Arduino with sensor setup
-- Raspberry Pi (or any Linux/Windows system for development)
+- Raspberry Pi with camera module
 
 ### Install Dependencies
 ```bash
@@ -109,12 +123,12 @@ pip install -r requirements.txt
 ```
 
 ### Dependencies
+- `gpiozero`: GPIO PWM control for Raspberry Pi actuators
 - `paho-mqtt`: MQTT client for cloud communication
+- `picamera2`: Raspberry Pi Camera interface (still capture and live streaming)
 - `pyserial`: Serial communication with Arduino
 - `scikit-fuzzy`: Fuzzy logic control system
 - `numpy`: Numerical computations
-- `networkx`: Required by scikit-fuzzy
-- `picamera2`: Raspberry Pi Camera interface (daily growth image capture)
 
 ## Configuration
 
@@ -122,31 +136,46 @@ All runtime parameters are controlled via environment variables. The system fall
 
 | Environment Variable | Default | Description |
 |---|---|---|
-| `GREENHOUSE_MQTT_BROKER` | `localhost` | MQTT broker hostname or IP address |
+| `GREENHOUSE_MQTT_BROKER` | `test.mosquitto.org` | MQTT broker hostname or IP address |
 | `GREENHOUSE_MQTT_PORT` | `1883` | MQTT broker port |
-| `GREENHOUSE_SERIAL_PORT` | `/dev/ttyACM0` | Primary serial port for Arduino |
+| `GREENHOUSE_MQTT_DATA_TOPIC` | `acity_greenhouse/paakwasi/data` | MQTT topic for the JSON data packet |
+| `GREENHOUSE_MQTT_PUBLISH_INTERVAL` | `1.0` | Seconds between MQTT data publishes |
+| `GREENHOUSE_SERIAL_PORT` | `/dev/ttyUSB0` | Serial port for Arduino |
 | `GREENHOUSE_SERIAL_BAUDRATE` | `115200` | Serial baud rate |
-| `GREENHOUSE_SERIAL_FALLBACKS` | `/dev/ttyACM0` | Comma-separated list of additional serial ports to try if the primary fails (e.g., `/dev/ttyUSB0,/dev/ttyACM0`) |
-| `GREENHOUSE_SERIAL_AUTO_DISCOVER` | `false` | Auto-discover available serial ports |
-| `GREENHOUSE_ALLOW_ONBOARD_UART` | `false` | Allow Raspberry Pi onboard UART (`/dev/serial0`, `/dev/ttyAMA0`) |
-| `GREENHOUSE_RUNTIME_DIR` | One directory above the repository root | Base directory for `data/` and `logs/` |
-| `GREENHOUSE_DATA_DIR` | `<RUNTIME_DIR>/data` | Directory for CSV data files |
+| `GREENHOUSE_RUNTIME_DIR` | One directory above the repository root | Base directory for all runtime output |
 | `GREENHOUSE_LOG_DIR` | `<RUNTIME_DIR>/logs` | Directory for log files |
-| `GREENHOUSE_STATUS_INTERVAL` | `1.0` | Seconds between MQTT status publishes |
+| `GREENHOUSE_LIVE_DIR` | `<RUNTIME_DIR>/live` | Directory for live CSV data files |
+| `GREENHOUSE_WEEKLY_DIR` | `<RUNTIME_DIR>/weekly` | Directory for weekly CSV archives |
+| `GREENHOUSE_IMAGE_DIR` | `<RUNTIME_DIR>/image` | Directory for captured still images |
+| `GREENHOUSE_HTTP_UPLOAD_DIR` | `<IMAGE_DIR>/posted` | Directory for images received via HTTP upload |
+| `GREENHOUSE_HTTP_ENABLED` | `1` | Enable (`1`) or disable (`0`) the HTTP image server |
+| `GREENHOUSE_HTTP_HOST` | `0.0.0.0` | Bind address for the HTTP server |
+| `GREENHOUSE_HTTP_PORT` | `8000` | Port for the HTTP image server |
+| `GREENHOUSE_HTTP_PUBLIC_HOST` | Auto-detected LAN IP | Hostname/IP used in public-facing URLs |
+| `GREENHOUSE_HTTP_STREAM_FPS` | `6.0` | Target frame rate for the MJPEG live stream |
+| `GREENHOUSE_HTTP_STREAM_WIDTH` | `640` | Live stream frame width (pixels) |
+| `GREENHOUSE_HTTP_STREAM_HEIGHT` | `480` | Live stream frame height (pixels) |
+| `GREENHOUSE_CAPTURE_HOUR` | `21` | Hour (0–23) for daily still capture |
+| `GREENHOUSE_CAPTURE_MINUTE` | `0` | Minute (0–59) for daily still capture |
+| `GREENHOUSE_POST_IMAGE_URL` | `http://127.0.0.1:8000/upload` | URL to POST captured images to |
+| `GREENHOUSE_POST_TIMEOUT` | `5.0` | Timeout in seconds for image POST requests |
+| `GREENHOUSE_IMAGE_BASE_URL` | `http://<public_host>:8000/images` | Base URL for serving stored images |
+| `GREENHOUSE_STREAM_URL` | `http://<public_host>:8000/stream` | Public URL for the MJPEG live stream |
 | `GREENHOUSE_LOOP_DELAY` | `0.1` | Main loop delay in seconds |
 
-**Example – run against a local MQTT broker on Linux:**
+**Example – run on Raspberry Pi:**
 ```bash
-export GREENHOUSE_MQTT_BROKER=localhost
-export GREENHOUSE_SERIAL_PORT=/dev/ttyACM0
+export GREENHOUSE_MQTT_BROKER=test.mosquitto.org
+export GREENHOUSE_SERIAL_PORT=/dev/ttyUSB0
 cd src
 python main.py
 ```
 
-**Example – Windows development setup:**
+**Example – run with a local broker and custom HTTP port:**
 ```bash
-set GREENHOUSE_MQTT_BROKER=localhost
-set GREENHOUSE_SERIAL_PORT=COM3
+export GREENHOUSE_MQTT_BROKER=localhost
+export GREENHOUSE_HTTP_PORT=9000
+export GREENHOUSE_SERIAL_PORT=/dev/ttyUSB0
 cd src
 python main.py
 ```
@@ -163,9 +192,12 @@ This starts:
 - Serial communication with Arduino
 - MQTT publishing to cloud broker
 - Fuzzy logic control computation
-- Data logging to CSV files
+- GPIO actuator control via gpiozero
+- CSV data logging (live files + weekly rotation)
 - Application logging
-- Daily growth image capture at 21:00 (9 PM)
+- HTTP image server (default port 8000)
+- Daily still image capture at 21:00 (configurable)
+- MJPEG live camera stream
 
 ### Run Individual Modules
 
@@ -195,13 +227,16 @@ python camera.py
 
 ### Data Collection
 
-The system automatically logs data to three CSV files:
-- `data/greenhouse_controlled.csv`: Sensor data from controlled section
-- `data/greenhouse_control.csv`: Sensor data from control section  
-- `data/training_data.csv`: Complete control cycles (sensors + PWM outputs)
+The system automatically logs data to CSV files under the live directory:
+- `live/greenhouse_controlled.csv`: Sensor data from controlled section
+- `live/greenhouse_control.csv`: Sensor data from control section
+- `live/training_data.csv`: Complete control cycles (sensors + PWM outputs)
 
-Daily growth images are saved to:
-- `data/images/growth_<timestamp>.jpg`: One image per day captured at 21:00 (9 PM)
+Files are archived weekly to `weekly/<YYYY-WW>/` and reset so live files remain small.
+
+Daily still images are saved to `<GREENHOUSE_IMAGE_DIR>/` and served at:
+- `http://<host>:<port>/images/<filename>` – individual image by name
+- `http://<host>:<port>/latest` – most recently captured image
 
 These files can be used for:
 - Machine learning model training
@@ -210,24 +245,35 @@ These files can be used for:
 - Comparative analysis of control effectiveness
 - Visual growth tracking over time
 
-## MQTT Topics
+## MQTT Data Packet
 
-The system publishes data to the following MQTT topics:
+The system publishes a single JSON packet to the configured topic at each publish interval.
 
-| Topic | Description | Example Value |
-|-------|-------------|---------------|
-| `greenhouse/timestamp` | Current timestamp | `2026-02-16 12:30:45.123` |
-| `greenhouse/controlled/temperature` | Controlled section temp | `25.5` |
-| `greenhouse/controlled/humidity` | Controlled section humidity | `85.2` |
-| `greenhouse/controlled/co2` | Controlled section CO₂ | `750.0` |
-| `greenhouse/controlled/light` | Controlled section light | `145.0` |
-| `greenhouse/controlled/moisture` | Controlled section moisture | `67.5` |
-| `greenhouse/control/temperature` | Control section temp | `26.8` |
-| `greenhouse/control/humidity` | Control section humidity | `78.3` |
-| `greenhouse/control/co2` | Control section CO₂ | `820.0` |
-| `greenhouse/control/light` | Control section light | `140.0` |
-| `greenhouse/control/moisture` | Control section moisture | `62.0` |
-| `greenhouse/system/status` | System connection status | `ONLINE` or `OFFLINE` |
+**Topic:** `acity_greenhouse/paakwasi/data` (configurable via `GREENHOUSE_MQTT_DATA_TOPIC`)
+
+**Payload example:**
+```json
+{
+  "timestamp": "2026-03-28 12:30:45.123",
+  "status": "ONLINE",
+  "controlled": {
+    "temperature": 25.5,
+    "humidity": 85.2,
+    "co2": 750.0,
+    "light": 145.0,
+    "moisture": 67.5
+  },
+  "control": {
+    "temperature": 26.8,
+    "humidity": 78.3,
+    "co2": 820.0,
+    "light": 140.0,
+    "moisture": 62.0
+  },
+  "image": "http://<host>:8000/images/growth_2026-03-28_21-00-00.jpg",
+  "stream": "http://<host>:8000/stream"
+}
+```
 
 ## System Status
 
@@ -235,13 +281,16 @@ The system publishes data to the following MQTT topics:
 - Fuzzy logic controller design (MATLAB)
 - Python implementation with scikit-fuzzy
 - Serial communication with Arduino
-- MQTT cloud integration
-- Data logging and storage system
+- MQTT cloud integration (single JSON packet per interval)
+- CSV data logging with weekly rotation
 - Comprehensive application logging
 - Dual-section monitoring
 - Automatic reconnection handling
 - Training data generation for ML
-- Daily growth image capture (Raspberry Pi Camera)
+- Daily still image capture (Raspberry Pi Camera)
+- MJPEG live camera stream
+- HTTP image server with viewer, stream, upload, and health endpoints
+- GPIO actuator control via gpiozero (BCM pin numbering)
 - Environment variable based configuration
 
 🚧 **Future Enhancements:**
