@@ -10,6 +10,7 @@ import time
 import logging
 import os
 import json
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -205,11 +206,10 @@ def main():
     BROKER = os.getenv("GREENHOUSE_MQTT_BROKER", "test.mosquitto.org")
     PORT = int(os.getenv("GREENHOUSE_MQTT_PORT", "1883"))
     DATA_TOPIC = os.getenv("GREENHOUSE_MQTT_DATA_TOPIC", "acity_greenhouse/paakwasi/data")
-    HTTP_PORT = int(os.getenv("GREENHOUSE_HTTP_PORT", "8000"))
-    IMAGE_URL = os.getenv("GREENHOUSE_IMAGE_URL", f"http://127.0.0.1:{HTTP_PORT}/latest")
-    STREAM_URL = os.getenv("GREENHOUSE_STREAM_URL", f"http://127.0.0.1:{HTTP_PORT}/stream")
     SERIAL_PORT = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
     BAUDRATE = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
+    DATA_PUBLISH_INTERVAL = float(os.getenv("GREENHOUSE_MQTT_PUBLISH_INTERVAL", "1.0"))
+    LOOP_DELAY = float(os.getenv("GREENHOUSE_LOOP_DELAY", "0.1"))
     
     # Initialize components
     serial_comm = SerialComm(port=SERIAL_PORT, baudrate=BAUDRATE, timeout=1, reconnect_interval=0.5)
@@ -226,6 +226,9 @@ def main():
     try:
         last_status = None
         debug_counter = 0
+        last_publish_time = 0.0
+        last_controlled = {}
+        last_control = {}
         while True:
             # Ensure MQTT connection is active
             mqtt_client.ensure_connected()
@@ -252,17 +255,21 @@ def main():
                 if line:
                     data = serial_comm.parse_data(line)
                     if data:
-                        packet = {
-                            "timestamp": data.get("timestamp"),
-                            "status": current_status,
-                            "controlled": data.get("controlled", {}),
-                            "control": data.get("control", {}),
-                            "image": IMAGE_URL,
-                            "stream": STREAM_URL,
-                        }
-                        mqtt_client.publish_data_packet(packet)
-            
-            time.sleep(0.1)  # Small delay to prevent CPU overload
+                        last_controlled = data.get("controlled", {})
+                        last_control = data.get("control", {})
+
+            current_time = time.time()
+            if current_time - last_publish_time >= DATA_PUBLISH_INTERVAL:
+                packet = {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                    "status": current_status,
+                    "controlled": last_controlled,
+                    "control": last_control,
+                }
+                mqtt_client.publish_data_packet(packet)
+                last_publish_time = current_time
+
+            time.sleep(LOOP_DELAY)  # Small delay to prevent CPU overload
             
     except KeyboardInterrupt:
         logger.info("Stopping MQTT publisher...")
