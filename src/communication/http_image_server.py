@@ -73,14 +73,6 @@ class ImageHTTPServer:
         frame_interval = 1.0 / max(stream_fps, 0.1)
 
         class _ImageHandler(BaseHTTPRequestHandler):
-            def _send_html(self, status_code: int, html: str) -> None:
-                body = html.encode("utf-8")
-                self.send_response(status_code)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
             def _send_json(self, status_code: int, payload: dict) -> None:
                 body = json.dumps(payload).encode("utf-8")
                 self.send_response(status_code)
@@ -89,95 +81,11 @@ class ImageHTTPServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _viewer_page(self) -> str:
-                return """<!doctype html>
-<html lang=\"en\">
-<head>
-    <meta charset=\"utf-8\" />
-    <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
-    <title>Greenhouse Camera</title>
-    <style>
-        :root { color-scheme: light; }
-        body {
-            margin: 0;
-            font-family: Verdana, sans-serif;
-            background: linear-gradient(180deg, #e8f4ec 0%, #f7fbf8 100%);
-            color: #234;
-            min-height: 100vh;
-            display: grid;
-            place-items: center;
-        }
-        main {
-            width: min(960px, 94vw);
-            background: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
-            padding: 16px;
-        }
-        h1 {
-            margin: 0 0 10px;
-            font-size: 1.2rem;
-        }
-        p {
-            margin: 0 0 12px;
-            color: #456;
-            font-size: 0.95rem;
-        }
-        img {
-            width: 100%;
-            height: auto;
-            border-radius: 10px;
-            border: 1px solid #dce9df;
-            background: #f5faf7;
-        }
-        .row {
-            margin-top: 10px;
-            display: flex;
-            gap: 8px;
-            align-items: center;
-            flex-wrap: wrap;
-            font-size: 0.9rem;
-            color: #345;
-        }
-        button {
-            border: none;
-            border-radius: 8px;
-            padding: 8px 12px;
-            background: #2f855a;
-            color: #fff;
-            cursor: pointer;
-            font-weight: 600;
-        }
-    </style>
-</head>
-<body>
-    <main>
-        <h1>Greenhouse Camera</h1>
-        <p>Live stream is shown below. Use snapshot refresh to see the latest stored image.</p>
-        <img id=\"live\" src=\"/stream\" alt=\"Live greenhouse feed\" />
-        <img id=\"latest\" src=\"/latest?t=0\" alt=\"Latest greenhouse capture\" style=\"margin-top: 10px;\" />
-        <div class=\"row\">
-            <button id=\"refresh\" type=\"button\">Refresh now</button>
-            <span id=\"status\">Live stream active</span>
-        </div>
-    </main>
-    <script>
-        const img = document.getElementById('latest');
-        const status = document.getElementById('status');
-        const refreshBtn = document.getElementById('refresh');
-
-        function refreshImage() {
-            const stamp = Date.now();
-            img.src = `/latest?t=${stamp}`;
-            status.textContent = `Updated at ${new Date().toLocaleTimeString()}`;
-        }
-
-        refreshBtn.addEventListener('click', refreshImage);
-        setInterval(refreshImage, 10000);
-    </script>
-</body>
-</html>
-"""
+            def _send_redirect(self, location: str) -> None:
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def _stream_frames(self) -> None:
                 if frame_provider is None:
@@ -250,8 +158,8 @@ class ImageHTTPServer:
                 parsed = urlparse(self.path)
                 request_path = parsed.path
 
-                if request_path == "/" or request_path == "/viewer":
-                    self._send_html(200, self._viewer_page())
+                if request_path == "/":
+                    self._send_redirect("/stream")
                     return
 
                 if request_path == "/health":
@@ -279,13 +187,9 @@ class ImageHTTPServer:
                     self._send_file(file_path)
                     return
 
-                self._send_json(
-                    200,
-                    {
-                        "message": "Greenhouse image server",
-                        "endpoints": ["GET /health", "GET /latest", "GET /stream", "GET /images/<name>", "POST /upload"],
-                    },
-                )
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def do_POST(self) -> None:
                 parsed = urlparse(self.path)
