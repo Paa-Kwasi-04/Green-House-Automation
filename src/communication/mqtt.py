@@ -10,6 +10,7 @@ import time
 import logging
 import os
 import json
+import socket
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -49,16 +50,31 @@ class MQTTClient:
         Whether the MQTT client's network loop has been started.
     """
 
-    def __init__(self, broker, port=1883, client_id="greenhouse_pi", data_topic="acity_greenhouse/paakwasi/data"):
+    def __init__(self, broker, port=1883, client_id=None, data_topic="acity_greenhouse/paakwasi/data"):
         self.broker = broker
         self.port = port
-        self.client_id = client_id
+        self.client_id = client_id or self._default_client_id()
         self.data_topic = data_topic
-        self.client = mqtt.Client(client_id=self.client_id)
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=self.client_id)
+        self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
         self.reconnect_interval = 5.0  # seconds
         self.last_reconnect = 0
         self.loop_started = False
+
+    @staticmethod
+    def _default_client_id():
+        """Build a mostly-unique MQTT client id to prevent broker collisions."""
+        host = socket.gethostname() or "pi"
+        safe_host = "".join(ch for ch in host if ch.isalnum() or ch in "-_")
+        return f"greenhouse_{safe_host}_{os.getpid()}"
+
+    def on_connect(self, client, userdata, flags, rc):
+        """Callback when the client connects or reconnects to the broker."""
+        if rc == 0:
+            logger.info("MQTT connected (client_id=%s)", self.client_id)
+        else:
+            logger.warning("MQTT connect returned rc=%s", rc)
 
     def on_disconnect(self, client, userdata, rc):
         """
@@ -116,9 +132,9 @@ class MQTTClient:
             current_time = time.time()
             if current_time - self.last_reconnect >= self.reconnect_interval:
                 logger.info("Attempting to reconnect to MQTT broker...")
+                self.last_reconnect = current_time
                 try:
                     self.client.reconnect()
-                    self.last_reconnect = current_time
                     logger.info("Reconnected to MQTT broker")
                 except Exception as e:
                     logger.error(f"MQTT reconnect failed: {e}")
@@ -164,6 +180,9 @@ class MQTTClient:
         """
         resolved_topic = topic or self.data_topic
         try:
+            if not self.ensure_connected():
+                logger.warning("Skipping publish to %s because MQTT is disconnected", resolved_topic)
+                return None
             payload = json.dumps(packet, ensure_ascii=True)
             result = self.client.publish(resolved_topic, payload, qos=qos, retain=retain)
             if result.rc != mqtt.MQTT_ERR_SUCCESS:
