@@ -236,7 +236,7 @@ class ImageHTTPServer:
         return _ImageHandler
 
 
-def post_image(image_path: str, url: str, timeout: float = 5.0) -> Tuple[int, str]:
+def post_image(image_path: str, url: str, timeout: float = 5.0, verify_tls: bool = True) -> Tuple[int, str]:
     """Post a local image file as raw bytes to an HTTP endpoint."""
     with open(image_path, "rb") as file_obj:
         data = file_obj.read()
@@ -251,6 +251,10 @@ def post_image(image_path: str, url: str, timeout: float = 5.0) -> Tuple[int, st
         },
     )
 
-    with request.urlopen(req, timeout=timeout) as response:
+    ssl_context = None
+    if url.lower().startswith("https://") and not verify_tls:
+        ssl_context = ssl._create_unverified_context()
+
+    with request.urlopen(req, timeout=timeout, context=ssl_context) as response:
         body = response.read().decode("utf-8", errors="replace")
         return response.getcode(), body

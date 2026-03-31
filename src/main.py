@@ -5,8 +5,9 @@ import os
 import logging
 import shutil
 import socket
+import ipaddress
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from communication.mqtt import MQTTClient
 from communication.serial_comm import SerialComm
 from communication.http_image_server import ImageHTTPServer, post_image
@@ -40,6 +41,20 @@ def _get_env_float(name: str, default: float) -> float:
 	except ValueError:
 		logger.warning("Invalid float for %s. Using default: %s", name, default)
 		return default
+
+
+def _get_env_bool(name: str, default: bool) -> bool:
+	"""Read boolean env var with fallback."""
+	raw = os.getenv(name)
+	if raw is None:
+		return default
+	value = raw.strip().lower()
+	if value in {"1", "true", "yes", "on"}:
+		return True
+	if value in {"0", "false", "no", "off"}:
+		return False
+	logger.warning("Invalid boolean for %s. Using default: %s", name, default)
+	return default
 
 
 def _latest_served_image_url(upload_dir: str, image_base_url: str):
@@ -77,6 +92,33 @@ def _detect_lan_ip() -> str:
 	return "127.0.0.1"
 
 
+def _normalize_public_base_url(raw_value: str, default_scheme: str = "http") -> str:
+	"""Normalize a public base URL (scheme://host[:port][/path]) without trailing slash."""
+	raw = (raw_value or "").strip()
+	if not raw:
+		return ""
+	if "://" not in raw:
+		raw = f"{default_scheme}://{raw}"
+	parsed = urlparse(raw)
+	if not parsed.netloc and parsed.path:
+		# Handles values like "example.com:8000" that urlparse treats as path.
+		raw = f"{default_scheme}://{parsed.path}"
+	return raw.rstrip("/")
+
+
+def _host_is_local_or_private(host: str) -> bool:
+	"""Return True if host is loopback/private IP or localhost."""
+	host_value = (host or "").strip().lower()
+	if host_value in {"localhost", "127.0.0.1", "0.0.0.0"}:
+		return True
+	try:
+		ip_obj = ipaddress.ip_address(host_value)
+		return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
+	except ValueError:
+		# Hostname/domain: cannot determine scope reliably.
+		return False
+
+
 def main():
 	runtime_dir = os.getenv("GREENHOUSE_RUNTIME_DIR", _default_runtime_dir())
 	log_dir = os.getenv("GREENHOUSE_LOG_DIR", os.path.join(runtime_dir, "logs"))
@@ -106,11 +148,25 @@ def main():
 	raw_capture_minute = _get_env_int("GREENHOUSE_CAPTURE_MINUTE", 0)
 	post_timeout = _get_env_float("GREENHOUSE_POST_TIMEOUT", 5.0)
 	http_public_host = os.getenv("GREENHOUSE_HTTP_PUBLIC_HOST", _detect_lan_ip())
+	public_base_url = _normalize_public_base_url(
+		os.getenv("GREENHOUSE_PUBLIC_BASE_URL", ""),
+		default_scheme="http",
+	)
+	if not public_base_url:
+		public_base_url = f"http://{http_public_host}:{http_port}"
 	default_post_url = f"http://127.0.0.1:{http_port}/upload"
 	image_post_url = os.getenv("GREENHOUSE_POST_IMAGE_URL", default_post_url)
-	image_base_url = os.getenv("GREENHOUSE_IMAGE_BASE_URL", f"http://{http_public_host}:{http_port}/images")
-	default_stream_url = f"http://{http_public_host}:{http_port}/stream"
+	image_base_url = os.getenv("GREENHOUSE_IMAGE_BASE_URL", f"{public_base_url}/images")
+	latest_image_url = os.getenv("GREENHOUSE_LATEST_IMAGE_URL", f"{public_base_url}/latest")
+	default_stream_url = f"{public_base_url}/stream"
 	stream_url = os.getenv("GREENHOUSE_STREAM_URL", default_stream_url)
+
+	if not os.getenv("GREENHOUSE_PUBLIC_BASE_URL") and _host_is_local_or_private(http_public_host):
+		logger.warning(
+			"HTTP public host is local/private (%s). External networks may not reach URLs in MQTT. "
+			"Set GREENHOUSE_PUBLIC_BASE_URL to your public domain/tunnel URL.",
+			http_public_host,
+		)
 
 	capture_hour = max(0, min(23, raw_capture_hour))
 	capture_minute = max(0, min(59, raw_capture_minute))
@@ -124,7 +180,7 @@ def main():
 		)
 
 	logger.info(
-		"Runtime config: MQTT=%s:%s topic=%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s public_host=%s stream_fps=%.2f stream_size=%sx%s stream_url=%s capture=%02d:%02d",
+		"Runtime config: MQTT=%s:%s topic=%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s public_host=%s public_base=%s stream_fps=%.2f stream_size=%sx%s stream_url=%s latest_url=%s capture=%02d:%02d",
 		broker,
 		port,
 		data_topic,
@@ -138,10 +194,12 @@ def main():
 		http_port,
 		http_enabled,
 		http_public_host,
+		public_base_url,
 		http_stream_fps,
 		http_stream_width,
 		http_stream_height,
 		stream_url,
+		latest_image_url,
 		capture_hour,
 		capture_minute,
 	)
@@ -283,7 +341,7 @@ def main():
 					"status": current_status,
 					"controlled": last_controlled,
 					"control": last_control,
-					"image": last_image_url,
+					"latest_image": latest_image_url,
 					"stream": stream_url,
 				}
 
