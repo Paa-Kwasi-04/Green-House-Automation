@@ -161,6 +161,17 @@ All runtime parameters are controlled via environment variables. The system fall
 | `GREENHOUSE_POST_TIMEOUT` | `5.0` | Timeout in seconds for image POST requests |
 | `GREENHOUSE_IMAGE_BASE_URL` | `http://<public_host>:8000/images` | Base URL for serving stored images |
 | `GREENHOUSE_STREAM_URL` | `http://<public_host>:8000/stream` | Public URL for the MJPEG live stream |
+| `GREENHOUSE_LATEST_IMAGE_URL` | `http://<public_host>:8000/latest` | Public URL for the latest-image endpoint (used in MQTT packet) |
+| `GREENHOUSE_PUBLIC_BASE_URL` | _(empty)_ | Explicit public base URL; overrides auto-detected host for all generated URLs |
+| `GREENHOUSE_TAILSCALE_FUNNEL_URL` | _(empty)_ | Tailscale Funnel URL; used as the public base URL when set |
+| `GREENHOUSE_TAILSCALE_HOST` | _(empty)_ | Tailscale host; used for public base URL when Funnel URL is not set |
+| `GREENHOUSE_TAILSCALE_SCHEME` | `http` | URL scheme used with `GREENHOUSE_TAILSCALE_HOST` (`http` or `https`) |
+| `GREENHOUSE_SETPOINT_TEMPERATURE` | `25.0` | Fuzzy controller temperature setpoint (°C) |
+| `GREENHOUSE_SETPOINT_HUMIDITY` | `85.0` | Fuzzy controller humidity setpoint (%) |
+| `GREENHOUSE_SETPOINT_CO2` | `800.0` | Fuzzy controller CO₂ setpoint (ppm) |
+| `GREENHOUSE_SETPOINT_LIGHT` | `150.0` | Fuzzy controller light intensity setpoint (lux) |
+| `GREENHOUSE_SETPOINT_MOISTURE` | `65.0` | Fuzzy controller substrate moisture setpoint (%) |
+| `GREENHOUSE_ACTUATOR_QUIET` | `0` | Suppress info-level logging in actuator standalone test mode (`1` = quiet) |
 | `GREENHOUSE_LOOP_DELAY` | `0.1` | Main loop delay in seconds |
 
 **Example – run on Raspberry Pi:**
@@ -225,6 +236,12 @@ cd src/sensor
 python camera.py
 ```
 
+**Test Actuator Driver:**
+```bash
+cd src/actuators
+python actuators.py
+```
+
 ### Data Collection
 
 The system automatically logs data to CSV files under the live directory:
@@ -270,7 +287,7 @@ The system publishes a single JSON packet to the configured topic at each publis
     "light": 140.0,
     "moisture": 62.0
   },
-  "image": "http://<host>:8000/images/growth_2026-03-28_21-00-00.jpg",
+  "latest_image": "http://<host>:8000/images/growth_2026-03-28_21-00-00.jpg",
   "stream": "http://<host>:8000/stream"
 }
 ```
