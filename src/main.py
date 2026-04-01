@@ -6,6 +6,7 @@ import logging
 import shutil
 import socket
 import ipaddress
+import subprocess
 from datetime import datetime
 from urllib.parse import quote, urlparse
 from communication.mqtt import MQTTClient
@@ -92,6 +93,22 @@ def _detect_lan_ip() -> str:
 	return "127.0.0.1"
 
 
+def _detect_tailscale_ip() -> str | None:
+	"""Try to find the local Tailscale 100.x.x.x address."""
+	try:
+		output = subprocess.check_output(
+			["tailscale", "ip", "-4"],
+			stderr=subprocess.DEVNULL,
+			text=True,
+		).strip()
+		if output:
+			# tailscale may return multiple IPv4 lines; prefer the first one.
+			return output.splitlines()[0].strip()
+	except Exception:
+		return None
+	return None
+
+
 def _normalize_public_base_url(raw_value: str, default_scheme: str = "http") -> str:
 	"""Normalize a public base URL (scheme://host[:port][/path]) without trailing slash."""
 	raw = (raw_value or "").strip()
@@ -117,6 +134,40 @@ def _host_is_local_or_private(host: str) -> bool:
 	except ValueError:
 		# Hostname/domain: cannot determine scope reliably.
 		return False
+
+
+def _resolve_public_base_url(http_public_host: str, http_port: int) -> str:
+	"""Resolve externally shared base URL with priority: explicit > funnel > tailnet > detected tailscale > legacy host."""
+	explicit_public = _normalize_public_base_url(
+		os.getenv("GREENHOUSE_PUBLIC_BASE_URL", ""),
+		default_scheme="http",
+	)
+	if explicit_public:
+		return explicit_public
+
+	funnel_public = _normalize_public_base_url(
+		os.getenv("GREENHOUSE_TAILSCALE_FUNNEL_URL", ""),
+		default_scheme="https",
+	)
+	if funnel_public:
+		return funnel_public
+
+	tailnet_host = (os.getenv("GREENHOUSE_TAILSCALE_HOST", "") or "").strip()
+	if tailnet_host:
+		tailnet_scheme = (os.getenv("GREENHOUSE_TAILSCALE_SCHEME", "http") or "http").strip().lower()
+		if tailnet_scheme not in {"http", "https"}:
+			logger.warning(
+				"Invalid GREENHOUSE_TAILSCALE_SCHEME=%s. Using http.",
+				tailnet_scheme,
+			)
+			tailnet_scheme = "http"
+		return _normalize_public_base_url(tailnet_host, default_scheme=tailnet_scheme)
+
+	ts_ip = _detect_tailscale_ip()
+	if ts_ip:
+		return f"http://{ts_ip}:{http_port}"
+
+	return f"http://{http_public_host}:{http_port}"
 
 
 def main():
@@ -148,24 +199,20 @@ def main():
 	raw_capture_minute = _get_env_int("GREENHOUSE_CAPTURE_MINUTE", 0)
 	post_timeout = _get_env_float("GREENHOUSE_POST_TIMEOUT", 5.0)
 	http_public_host = os.getenv("GREENHOUSE_HTTP_PUBLIC_HOST", _detect_lan_ip())
-	public_base_url = _normalize_public_base_url(
-		os.getenv("GREENHOUSE_PUBLIC_BASE_URL", ""),
-		default_scheme="http",
-	)
-	if not public_base_url:
-		public_base_url = f"http://{http_public_host}:{http_port}"
+	public_base_url = _resolve_public_base_url(http_public_host=http_public_host, http_port=http_port)
 	default_post_url = f"http://127.0.0.1:{http_port}/upload"
 	image_post_url = os.getenv("GREENHOUSE_POST_IMAGE_URL", default_post_url)
 	image_base_url = os.getenv("GREENHOUSE_IMAGE_BASE_URL", f"{public_base_url}/images")
 	latest_image_url = os.getenv("GREENHOUSE_LATEST_IMAGE_URL", f"{public_base_url}/latest")
 	default_stream_url = f"{public_base_url}/stream"
 	stream_url = os.getenv("GREENHOUSE_STREAM_URL", default_stream_url)
+	public_url_host = (urlparse(public_base_url).hostname or "").strip() or http_public_host
 
-	if not os.getenv("GREENHOUSE_PUBLIC_BASE_URL") and _host_is_local_or_private(http_public_host):
+	if _host_is_local_or_private(public_url_host):
 		logger.warning(
-			"HTTP public host is local/private (%s). External networks may not reach URLs in MQTT. "
-			"Set GREENHOUSE_PUBLIC_BASE_URL to your public domain/tunnel URL.",
-			http_public_host,
+			"Resolved public URL host is local/private (%s). External networks may not reach URLs in MQTT. "
+			"Set GREENHOUSE_PUBLIC_BASE_URL or GREENHOUSE_TAILSCALE_FUNNEL_URL.",
+			public_url_host,
 		)
 
 	capture_hour = max(0, min(23, raw_capture_hour))
@@ -345,8 +392,8 @@ def main():
 					"stream": stream_url,
 				}
 
-				# Publish one JSON payload packet to the configured MQTT topic.
-				mqtt_client.publish_data_packet(packet, qos=1)
+				# Retain the latest status packet so new subscribers receive endpoints immediately.
+				mqtt_client.publish_data_packet(packet, qos=1, retain=True)
 				last_publish_time = current_time
 
 			time.sleep(loop_delay)
