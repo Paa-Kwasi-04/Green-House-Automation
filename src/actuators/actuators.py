@@ -1,11 +1,12 @@
 """Actuator driver for Raspberry Pi greenhouse hardware.
 
 Hardware mapping (BCM numbering):
-- Fan 1 -> GPIO 22
-- Fan 2 -> GPIO 17
-- Peristaltic Pump -> GPIO 4
-- LED Light -> GPIO 27
-- Humidifier -> GPIO 10
+	- Fan 1 (Intake) -> GPIO 22
+	- Fan 2 (Intake) -> GPIO 17
+	- Fan 3 (Exhaust) -> GPIO 23
+	- pump -> GPIO 4
+	- LED -> GPIO 27
+	- Humidifier -> GPIO 10
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ class ActuatorDriver:
 	PINS: Dict[str, int] = {
 		"fan_1": 22,
 		"fan_2": 17,
+		"fan_3": 23,
 		"pump": 4,
 		"led": 27,
 		"humidifier": 10,
@@ -158,18 +160,25 @@ class ActuatorDriver:
 
 		Expected keys:
 		- humidifier_pwm
-		- fan_pwm (applied to both fan_1 and fan_2)
+		- fan_pwm (applied to intake fans: fan_1 and fan_2)
 		- led_pwm
 		- pump_pwm
+
+		Notes
+		-----
+		Exhaust fan (fan_3) runs at 75% of intake fan PWM to maintain
+		balanced air circulation and prevent negative pressure.
 		"""
 		humidifier_pwm = int(outputs.get("humidifier_pwm", 0))
 		fan_pwm = int(outputs.get("fan_pwm", 0))
+		exhaust_pwm = int(fan_pwm * 0.75)  # Exhaust at 75% of intake
 		led_pwm = int(outputs.get("led_pwm", 0))
 		pump_pwm = int(outputs.get("pump_pwm", 0))
 
 		self.set_pwm_255("humidifier", humidifier_pwm)
 		self.set_pwm_255("fan_1", fan_pwm)
 		self.set_pwm_255("fan_2", fan_pwm)
+		self.set_pwm_255("fan_3", exhaust_pwm)
 		self.set_pwm_255("led", led_pwm)
 		self.set_pwm_255("pump", pump_pwm)
 
