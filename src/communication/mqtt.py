@@ -285,7 +285,7 @@ def main():
                     "controlled": last_controlled,
                     "control": last_control,
                 }
-                mqtt_client.publish_data_packet(packet)
+                mqtt_client.publish_data_packet(packet, qos=1, retain=True)
                 last_publish_time = current_time
 
             time.sleep(LOOP_DELAY)  # Small delay to prevent CPU overload

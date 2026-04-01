@@ -47,20 +47,6 @@ def _get_env_float(name: str, default: float) -> float:
 		return default
 
 
-def _get_env_bool(name: str, default: bool) -> bool:
-	"""Read boolean env var with fallback."""
-	raw = os.getenv(name)
-	if raw is None:
-		return default
-	value = raw.strip().lower()
-	if value in {"1", "true", "yes", "on"}:
-		return True
-	if value in {"0", "false", "no", "off"}:
-		return False
-	logger.warning("Invalid boolean for %s. Using default: %s", name, default)
-	return default
-
-
 def _latest_served_image_url(upload_dir: str, image_base_url: str):
 	"""Return URL of the latest image currently available on the HTTP server."""
 	try:
@@ -300,7 +286,7 @@ def main():
 					"status": current_status,
 					"controlled": last_controlled,
 					"control": last_control,
-					"latest_image": latest_image_url,
+					"latest_image": last_image_url or latest_image_url,
 					"stream": stream_url,
 				}
 
