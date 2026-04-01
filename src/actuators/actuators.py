@@ -36,12 +36,20 @@ class ActuatorDriver:
 	}
 
 	def __init__(self, pwm_frequency: int = 1000) -> None:
+		"""Initialize PWM channels for all configured actuators.
+
+		Parameters
+		----------
+		pwm_frequency : int, optional
+			PWM base frequency in Hz used for all channels.
+		"""
 		self.pwm_frequency = pwm_frequency
 		self._pwm_channels: Dict[str, PWMOutputDevice] = {}
 		self._is_initialized = False
 		self._initialize_gpio()
 
 	def _initialize_gpio(self) -> None:
+		"""Create gpiozero PWM devices for every mapped actuator pin."""
 		for name, pin in self.PINS.items():
 			device = PWMOutputDevice(
 				pin,
@@ -55,37 +63,98 @@ class ActuatorDriver:
 
 	@staticmethod
 	def _clamp(value: float, lower: float, upper: float) -> float:
+		"""Clamp a numeric value to a closed interval.
+
+		Parameters
+		----------
+		value : float
+			Input value to clamp.
+		lower : float
+			Lower bound.
+		upper : float
+			Upper bound.
+
+		Returns
+		-------
+		float
+			Clamped value.
+		"""
 		return max(lower, min(upper, value))
 
 	def _require_actuator(self, name: str) -> None:
+		"""Validate an actuator name.
+
+		Parameters
+		----------
+		name : str
+			Actuator key expected to exist in ``PINS``.
+
+		Raises
+		------
+		ValueError
+			If the actuator key is unknown.
+		"""
 		if name not in self.PINS:
 			valid = ", ".join(sorted(self.PINS.keys()))
 			raise ValueError(f"Unknown actuator '{name}'. Valid names: {valid}")
 
 	def set_on(self, name: str) -> None:
-		"""Switch an actuator fully ON (100% duty)."""
+		"""Switch an actuator fully ON (100% duty).
+
+		Parameters
+		----------
+		name : str
+			Actuator key in ``PINS``.
+		"""
 		self._require_actuator(name)
 		self._pwm_channels[name].on()
 
 	def set_off(self, name: str) -> None:
-		"""Switch an actuator fully OFF (0% duty)."""
+		"""Switch an actuator fully OFF (0% duty).
+
+		Parameters
+		----------
+		name : str
+			Actuator key in ``PINS``.
+		"""
 		self._require_actuator(name)
 		self._pwm_channels[name].off()
 
 	def set_duty_cycle(self, name: str, duty_cycle: float) -> None:
-		"""Set duty cycle in range 0-100 for a named actuator."""
+		"""Set actuator duty cycle using percentage units.
+
+		Parameters
+		----------
+		name : str
+			Actuator key in ``PINS``.
+		duty_cycle : float
+			Duty cycle percentage in range 0-100. Values outside range are clamped.
+		"""
 		self._require_actuator(name)
 		duty = self._clamp(float(duty_cycle), 0.0, 100.0)
 		self._pwm_channels[name].value = duty / 100.0
 
 	def set_pwm_255(self, name: str, pwm_value: int) -> None:
-		"""Set actuator output from 8-bit value in range 0-255."""
+		"""Set actuator output from an 8-bit PWM value.
+
+		Parameters
+		----------
+		name : str
+			Actuator key in ``PINS``.
+		pwm_value : int
+			8-bit PWM value in range 0-255. Values outside range are clamped.
+		"""
 		clamped = int(self._clamp(float(pwm_value), 0.0, 255.0))
 		duty = (clamped / 255.0) * 100.0
 		self.set_duty_cycle(name=name, duty_cycle=duty)
 
 	def apply_outputs(self, outputs: Dict[str, int]) -> None:
 		"""Apply fuzzy controller outputs to GPIO actuators.
+
+		Parameters
+		----------
+		outputs : dict of str to int
+			Controller output dictionary.
 
 		Expected keys:
 		- humidifier_pwm
@@ -110,7 +179,12 @@ class ActuatorDriver:
 			self.set_off(name)
 
 	def cleanup(self) -> None:
-		"""Turn everything off and release GPIO resources."""
+		"""Turn everything off and release GPIO resources.
+
+		Notes
+		-----
+		This method is idempotent and safe to call more than once.
+		"""
 		if not self._is_initialized:
 			return
 
@@ -124,7 +198,13 @@ class ActuatorDriver:
 			self._pwm_channels.clear()
 
 def main() -> None:
-	"""Run actuator test loop using live sensor data from serial communication."""
+	"""Run an actuator test loop driven by live serial sensor values.
+
+	Notes
+	-----
+	Reads sensor data, computes fuzzy outputs, and applies PWM values to the
+	mapped actuators until interrupted.
+	"""
 	quiet = os.getenv("GREENHOUSE_ACTUATOR_QUIET", "0").lower() in {"1", "true", "yes"}
 	log_level = logging.WARNING if quiet else logging.INFO
 	

@@ -14,13 +14,19 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional, Tuple
 from urllib import request
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
 
 def detect_lan_ip() -> str:
-    """Best-effort LAN IP detection for URLs shared to same-network clients."""
+    """Detect a likely LAN IPv4 address for external URL construction.
+
+    Returns
+    -------
+    str
+        Detected non-loopback IPv4 address, or ``127.0.0.1`` as fallback.
+    """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             # No packet is sent; connect() is used only to pick the outbound interface.
@@ -34,7 +40,13 @@ def detect_lan_ip() -> str:
 
 
 def _detect_tailscale_ip() -> Optional[str]:
-    """Try to find the local Tailscale 100.x.x.x address."""
+    """Detect local Tailscale IPv4 address.
+
+    Returns
+    -------
+    str or None
+        First IPv4 from ``tailscale ip -4`` when available, otherwise ``None``.
+    """
     try:
         output = subprocess.check_output(
             ["tailscale", "ip", "-4"],
@@ -50,7 +62,20 @@ def _detect_tailscale_ip() -> Optional[str]:
 
 
 def _normalize_public_base_url(raw_value: str, default_scheme: str = "http") -> str:
-    """Normalize a public base URL (scheme://host[:port][/path]) without trailing slash."""
+    """Normalize a public base URL string.
+
+    Parameters
+    ----------
+    raw_value : str
+        Input URL or host value, with or without scheme.
+    default_scheme : str, optional
+        Scheme inserted when missing.
+
+    Returns
+    -------
+    str
+        Normalized URL without trailing slash, or empty string for empty input.
+    """
     raw = (raw_value or "").strip()
     if not raw:
         return ""
@@ -64,7 +89,18 @@ def _normalize_public_base_url(raw_value: str, default_scheme: str = "http") -> 
 
 
 def host_is_local_or_private(host: str) -> bool:
-    """Return True if host is loopback/private IP or localhost."""
+    """Check whether a host resolves to local/private scope.
+
+    Parameters
+    ----------
+    host : str
+        Hostname or IP address.
+
+    Returns
+    -------
+    bool
+        ``True`` for loopback/private/link-local IPs and localhost aliases.
+    """
     host_value = (host or "").strip().lower()
     if host_value in {"localhost", "127.0.0.1", "0.0.0.0"}:
         return True
@@ -77,7 +113,22 @@ def host_is_local_or_private(host: str) -> bool:
 
 
 def resolve_public_base_url(http_public_host: str, http_port: int) -> str:
-    """Resolve externally shared base URL with priority: explicit > funnel > tailnet > detected tailscale > legacy host."""
+    """Resolve externally shared base URL from environment and runtime hints.
+
+    Parameters
+    ----------
+    http_public_host : str
+        Fallback host used when no explicit public URL can be resolved.
+    http_port : int
+        HTTP port used for generated fallback URLs.
+
+    Returns
+    -------
+    str
+        Resolved base URL using priority:
+        explicit public URL, Tailscale funnel URL, Tailscale host, detected
+        Tailscale IP, then fallback host+port.
+    """
     explicit_public = _normalize_public_base_url(
         os.getenv("GREENHOUSE_PUBLIC_BASE_URL", ""),
         default_scheme="http",
@@ -110,8 +161,56 @@ def resolve_public_base_url(http_public_host: str, http_port: int) -> str:
     return f"http://{http_public_host}:{http_port}"
 
 
+def latest_served_image_url(upload_dir: str, image_base_url: str) -> Optional[str]:
+    """Return URL of the latest image currently available on the HTTP server.
+
+    Parameters
+    ----------
+    upload_dir : str
+        Directory containing served image files.
+    image_base_url : str
+        Public base URL prefix for image serving endpoint.
+
+    Returns
+    -------
+    str or None
+        URL to most recently modified image file, or ``None`` when unavailable.
+    """
+    try:
+        if not os.path.isdir(upload_dir):
+            return None
+        candidates = []
+        for name in os.listdir(upload_dir):
+            if name.lower().endswith((".jpg", ".jpeg", ".png")):
+                full_path = os.path.join(upload_dir, name)
+                if os.path.isfile(full_path):
+                    candidates.append(full_path)
+        if not candidates:
+            return None
+        latest = max(candidates, key=os.path.getmtime)
+        latest_name = os.path.basename(latest)
+        return f"{image_base_url.rstrip('/')}/{quote(latest_name)}"
+    except Exception as exc:
+        logger.warning("Unable to resolve latest served image: %s", exc)
+        return None
+
+
 class ImageHTTPServer:
-    """Small HTTP server to receive and serve camera images."""
+    """Small threaded HTTP server to receive and serve greenhouse images.
+
+    Parameters
+    ----------
+    host : str, optional
+        Interface address to bind.
+    port : int, optional
+        TCP port to listen on.
+    upload_dir : str, optional
+        Directory where uploaded/captured images are served from.
+    frame_provider : callable, optional
+        Zero-argument callback returning JPEG bytes for stream frames.
+    stream_fps : float, optional
+        Target MJPEG stream frame rate.
+    """
 
     def __init__(
         self,
@@ -145,7 +244,7 @@ class ImageHTTPServer:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop HTTP server and release socket."""
+        """Stop HTTP server and release socket resources."""
         if self._server is None:
             return
 
@@ -332,7 +431,24 @@ class ImageHTTPServer:
 
 
 def post_image(image_path: str, url: str, timeout: float = 5.0, verify_tls: bool = True) -> Tuple[int, str]:
-    """Post a local image file as raw bytes to an HTTP endpoint."""
+    """Post a local image file as raw bytes to an HTTP endpoint.
+
+    Parameters
+    ----------
+    image_path : str
+        Path to local image file.
+    url : str
+        HTTP/HTTPS endpoint URL that accepts ``POST`` uploads.
+    timeout : float, optional
+        Request timeout in seconds.
+    verify_tls : bool, optional
+        Whether TLS certificate verification should be enforced for HTTPS.
+
+    Returns
+    -------
+    tuple of (int, str)
+        HTTP status code and decoded response body.
+    """
     with open(image_path, "rb") as file_obj:
         data = file_obj.read()
 

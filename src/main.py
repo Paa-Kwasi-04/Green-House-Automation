@@ -14,6 +14,7 @@ from communication.http_image_server import (
 	detect_lan_ip,
 	resolve_public_base_url,
 	host_is_local_or_private,
+	latest_served_image_url,
 )
 from control.fuzzy_controller import FuzzyController
 from actuators import ActuatorDriver
@@ -25,12 +26,32 @@ logger = logging.getLogger(__name__)
 
 
 def _default_runtime_dir() -> str:
-	"""Default runtime output directory (parent of repository root)."""
+	"""Return default runtime output directory.
+
+	Returns
+	-------
+	str
+		Absolute path to the parent of the repository root where runtime
+		artifacts (logs, images, CSVs) are stored by default.
+	"""
 	return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def _get_env_int(name: str, default: int) -> int:
-	"""Read integer env var with fallback."""
+	"""Read integer environment variable with fallback behavior.
+
+	Parameters
+	----------
+	name : str
+		Environment variable name.
+	default : int
+		Fallback value when variable is missing or invalid.
+
+	Returns
+	-------
+	int
+		Parsed integer value or fallback.
+	"""
 	try:
 		return int(os.getenv(name, str(default)))
 	except ValueError:
@@ -39,7 +60,20 @@ def _get_env_int(name: str, default: int) -> int:
 
 
 def _get_env_float(name: str, default: float) -> float:
-	"""Read float env var with fallback."""
+	"""Read float environment variable with fallback behavior.
+
+	Parameters
+	----------
+	name : str
+		Environment variable name.
+	default : float
+		Fallback value when variable is missing or invalid.
+
+	Returns
+	-------
+	float
+		Parsed float value or fallback.
+	"""
 	try:
 		return float(os.getenv(name, str(default)))
 	except ValueError:
@@ -47,28 +81,13 @@ def _get_env_float(name: str, default: float) -> float:
 		return default
 
 
-def _latest_served_image_url(upload_dir: str, image_base_url: str):
-	"""Return URL of the latest image currently available on the HTTP server."""
-	try:
-		if not os.path.isdir(upload_dir):
-			return None
-		candidates = []
-		for name in os.listdir(upload_dir):
-			if name.lower().endswith((".jpg", ".jpeg", ".png")):
-				full_path = os.path.join(upload_dir, name)
-				if os.path.isfile(full_path):
-					candidates.append(full_path)
-		if not candidates:
-			return None
-		latest = max(candidates, key=os.path.getmtime)
-		latest_name = os.path.basename(latest)
-		return f"{image_base_url.rstrip('/')}/{quote(latest_name)}"
-	except Exception as exc:
-		logger.warning("Unable to resolve latest served image: %s", exc)
-		return None
-
-
 def main():
+	"""Run greenhouse runtime loop.
+
+	The loop coordinates serial ingestion, fuzzy control outputs, actuator
+	updates, daily image capture/upload, HTTP image server hosting, CSV logging,
+	and periodic MQTT status publishing.
+	"""
 	runtime_dir = os.getenv("GREENHOUSE_RUNTIME_DIR", _default_runtime_dir())
 	log_dir = os.getenv("GREENHOUSE_LOG_DIR", os.path.join(runtime_dir, "logs"))
 	live_data_dir = os.getenv("GREENHOUSE_LIVE_DIR", os.path.join(runtime_dir, "live"))
@@ -191,7 +210,7 @@ def main():
 			http_server = None
 
 	last_capture_day = None
-	last_image_url = _latest_served_image_url(http_upload_dir, image_base_url)
+	last_image_url = latest_served_image_url(http_upload_dir, image_base_url)
 	if last_image_url:
 		logger.info("Using last served image URL at startup: %s", last_image_url)
 

@@ -1,3 +1,10 @@
+"""Camera utilities for periodic captures and HTTP stream frames.
+
+This module wraps Picamera2 operations used by the greenhouse runtime,
+including still-image capture for daily growth snapshots and JPEG frame
+capture for the live HTTP stream endpoint.
+"""
+
 import os
 import io
 import time
@@ -10,8 +17,27 @@ logger = logging.getLogger(__name__)
 
 
 class Camera:
-    
+
+    """High-level camera wrapper for still captures and stream frames.
+
+    Parameters
+    ----------
+    image_dir : str, optional
+        Directory where captured still images are written.
+    stream_size : tuple[int, int], optional
+        Resolution used for preview/stream capture as ``(width, height)``.
+    """
+
     def __init__(self, image_dir="data/images", stream_size=(640, 480)):
+        """Initialize camera resources and default stream/still configurations.
+
+        Parameters
+        ----------
+        image_dir : str, optional
+            Directory where captured still images are written.
+        stream_size : tuple[int, int], optional
+            Resolution used for preview/stream capture as ``(width, height)``.
+        """
         self.image_dir = image_dir
         os.makedirs(self.image_dir, exist_ok=True)
 
@@ -26,7 +52,13 @@ class Camera:
         self._still_settle_seconds = 0.6
 
     def _ensure_started(self):
-        """Start camera once and keep it running for still captures and live feed."""
+        """Start camera once and perform one-time warmup.
+
+        Notes
+        -----
+        Warmup helps auto exposure/auto white balance settle so the first
+        captured frames are usable.
+        """
         if not self._started:
             self.picam2.start()
             self._started = True
@@ -36,6 +68,18 @@ class Camera:
             self._warmup_done = True
 
     def capture(self):
+        """Capture a still image and return its file path.
+
+        Returns
+        -------
+        str
+            Absolute or relative file path to the captured image.
+
+        Notes
+        -----
+        The method temporarily switches to still mode for reliability, then
+        restores preview mode for low-latency streaming.
+        """
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         filename = f"growth_{timestamp}.jpg"
@@ -64,7 +108,13 @@ class Camera:
         return filepath
 
     def capture_frame_jpeg(self) -> bytes:
-        """Capture a single JPEG frame as bytes for HTTP streaming."""
+        """Capture one JPEG frame from the current stream configuration.
+
+        Returns
+        -------
+        bytes
+            JPEG-encoded frame bytes suitable for MJPEG HTTP responses.
+        """
         with self._lock:
             self._ensure_started()
             frame_buffer = io.BytesIO()
@@ -72,7 +122,13 @@ class Camera:
             return frame_buffer.getvalue()
 
     def shutdown(self) -> None:
-        """Release camera resources on application shutdown."""
+        """Stop camera and release Picamera2 resources.
+
+        Notes
+        -----
+        Safe to call during application teardown to prevent camera device
+        lockups between runs.
+        """
         with self._lock:
             if self._started:
                 self.picam2.stop()
