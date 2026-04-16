@@ -158,7 +158,7 @@ class MQTTClient:
             if not self.loop_started:
                 self.client.loop_start()  # Background networking thread
                 self.loop_started = True
-            logger.info(f"Connected to MQTT broker {self.broker}:{self.port}")
+            logger.info(f"Connection initiated to MQTT broker {self.broker}:{self.port}")
         except Exception as e:
             logger.error(f"MQTT connection failed: {e}")
 
@@ -285,7 +285,7 @@ def main():
                     "controlled": last_controlled,
                     "control": last_control,
                 }
-                mqtt_client.publish_data_packet(packet, qos=1, retain=True)
+                mqtt_client.publish_data_packet(packet, qos=1, retain=False)
                 last_publish_time = current_time
 
             time.sleep(LOOP_DELAY)  # Small delay to prevent CPU overload
