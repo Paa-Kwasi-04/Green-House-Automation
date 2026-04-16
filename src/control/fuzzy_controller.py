@@ -27,8 +27,6 @@ class FuzzyController:
         Temperature setpoint in °C.
     H_set : float
         Humidity setpoint in %.
-    CO2_set : float
-        CO2 setpoint in ppm.
     L_set : float
         Light setpoint in lux.
     M_set : float
@@ -61,15 +59,13 @@ class FuzzyController:
         # Setpoints (configurable via env vars, with stable defaults)
         self.T_set = self._get_env_float("GREENHOUSE_SETPOINT_TEMPERATURE", 25.0)
         self.H_set = self._get_env_float("GREENHOUSE_SETPOINT_HUMIDITY", 85.0)
-        self.CO2_set = self._get_env_float("GREENHOUSE_SETPOINT_CO2", 800.0)
         self.L_set = self._get_env_float("GREENHOUSE_SETPOINT_LIGHT", 150.0)
         self.M_set = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE", 65.0)
 
         logger.info(
-            "Fuzzy setpoints: T=%.2f, H=%.2f, CO2=%.2f, L=%.2f, M=%.2f",
+            "Fuzzy setpoints: T=%.2f, H=%.2f, L=%.2f, M=%.2f",
             self.T_set,
             self.H_set,
-            self.CO2_set,
             self.L_set,
             self.M_set,
         )
@@ -118,17 +114,13 @@ class FuzzyController:
         """Build fan fuzzy control system."""
 
         temp_error = ctrl.Antecedent(np.arange(-5, 6, 1), 'temp_error')
-        co2_error = ctrl.Antecedent(np.arange(-1000, 1001, 10), 'co2_error')
         fan = ctrl.Consequent(np.arange(0, 101, 1), 'fan')
 
         # Membership Functions
-        temp_error['Cold'] = fuzz.trimf(temp_error.universe, [-5, -5, 0])
-        temp_error['Normal'] = fuzz.trimf(temp_error.universe, [-1, 0, 1])
-        temp_error['Hot'] = fuzz.trimf(temp_error.universe, [0, 5, 5])
-
-        co2_error['Low'] = fuzz.trimf(co2_error.universe, [-1000, -1000, 0])
-        co2_error['OK'] = fuzz.trimf(co2_error.universe, [-300, 0, 300])
-        co2_error['High'] = fuzz.trimf(co2_error.universe, [0, 1000, 1000])
+        temp_error['Cold'] = fuzz.trimf(temp_error.universe, [-5, -5, -1])
+        temp_error['Normal'] = fuzz.trimf(temp_error.universe, [-2, 0, 2])
+        temp_error['Warm'] = fuzz.trimf(temp_error.universe, [1, 3, 5])
+        temp_error['Hot'] = fuzz.trimf(temp_error.universe, [3, 5, 5])
 
         fan['OFF'] = fuzz.trimf(fan.universe, [0, 0, 25])
         fan['LOW'] = fuzz.trimf(fan.universe, [20, 40, 60])
@@ -136,17 +128,10 @@ class FuzzyController:
         fan['HIGH'] = fuzz.trimf(fan.universe, [80, 100, 100])
 
         rules = [
-            ctrl.Rule(temp_error['Cold'] & co2_error['Low'], fan['OFF']),
-            ctrl.Rule(temp_error['Cold'] & co2_error['OK'], fan['LOW']),
-            ctrl.Rule(temp_error['Cold'] & co2_error['High'], fan['MED']),
-
-            ctrl.Rule(temp_error['Normal'] & co2_error['Low'], fan['LOW']),
-            ctrl.Rule(temp_error['Normal'] & co2_error['OK'], fan['LOW']),
-            ctrl.Rule(temp_error['Normal'] & co2_error['High'], fan['HIGH']),
-
-            ctrl.Rule(temp_error['Hot'] & co2_error['Low'], fan['MED']),
-            ctrl.Rule(temp_error['Hot'] & co2_error['OK'], fan['HIGH']),
-            ctrl.Rule(temp_error['Hot'] & co2_error['High'], fan['HIGH'])
+            ctrl.Rule(temp_error['Cold'], fan['OFF']),
+            ctrl.Rule(temp_error['Normal'], fan['LOW']),
+            ctrl.Rule(temp_error['Warm'], fan['MED']),
+            ctrl.Rule(temp_error['Hot'], fan['HIGH'])
         ]
 
         system = ctrl.ControlSystem(rules)
@@ -205,7 +190,7 @@ class FuzzyController:
         Parameters
         ----------
         sensor_data : dict
-            Dictionary with keys: ``temperature``, ``humidity``, ``co2``,
+            Dictionary with keys: ``temperature``, ``humidity``,
             ``light``, and ``moisture``.
 
         Returns
@@ -217,16 +202,16 @@ class FuzzyController:
 
         T = sensor_data["temperature"]
         H = sensor_data["humidity"]
-        CO2 = sensor_data["co2"]
         L = sensor_data["light"]
         M = sensor_data["moisture"]
 
-        # Compute errors (actual - setpoint)
+        # Compute errors.
+        # Temperature/humidity use actual - setpoint.
+        # Light/moisture use setpoint - actual so deficits map to stronger actuation.
         eT = T - self.T_set
         eH = H - self.H_set
-        eCO2 = CO2 - self.CO2_set
-        eL = L - self.L_set
-        eM = M - self.M_set
+        eL = self.L_set - L
+        eM = self.M_set - M
 
         # HUMIDIFIER
         self.humidifier_sim.input['temp_error'] = eT
@@ -236,7 +221,6 @@ class FuzzyController:
 
         # FAN
         self.fan_sim.input['temp_error'] = eT   
-        self.fan_sim.input['co2_error'] = eCO2
         self.fan_sim.compute()
         fan_output = self.fan_sim.output['fan']
 
