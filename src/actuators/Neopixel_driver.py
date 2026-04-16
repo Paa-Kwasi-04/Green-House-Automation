@@ -53,6 +53,7 @@ class NeoPixelDriver:
 		if log_transmissions is None:
 			log_transmissions = os.getenv("GREENHOUSE_NEOPIXEL_LOG_TX", "1").lower() not in {"0", "false", "no"}
 		self.log_transmissions = bool(log_transmissions)
+		self._last_output_level: int | None = None
 		self._pixels = neopixel.NeoPixel(
 			self.pin,
 			self.pixel_count,
@@ -112,6 +113,8 @@ class NeoPixelDriver:
 		level = self._clamp_int(pwm_value, 0, 255)
 		normalized = level / 255.0
 		rgb = (level, level, level)
+		if self._last_output_level == level:
+			return
 		if self.log_transmissions:
 			logger.info(
 				"NeoPixel TX GPIO18: value_0_to_1=%.3f",
@@ -120,16 +123,20 @@ class NeoPixelDriver:
 		self._pixels.fill(rgb)
 		if not self.auto_write:
 			self._pixels.show()
+		self._last_output_level = level
 
 	def off(self) -> None:
 		"""Turn all pixels off."""
 		if self._closed:
+			return
+		if self._last_output_level == 0:
 			return
 		if self.log_transmissions:
 			logger.info("NeoPixel TX GPIO18: value_0_to_1=0.000")
 		self._pixels.fill((0, 0, 0))
 		if not self.auto_write:
 			self._pixels.show()
+		self._last_output_level = 0
 
 	def cleanup(self) -> None:
 		"""Turn LEDs off and release NeoPixel resources."""

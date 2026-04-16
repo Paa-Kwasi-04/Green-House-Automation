@@ -61,6 +61,7 @@ class MQTTClient:
         self.reconnect_interval = 5.0  # seconds
         self.last_reconnect = 0
         self.loop_started = False
+        self._publish_skip_warned = False
 
     @staticmethod
     def _default_client_id():
@@ -72,6 +73,7 @@ class MQTTClient:
     def on_connect(self, client, userdata, flags, rc):
         """Callback when the client connects or reconnects to the broker."""
         if rc == 0:
+            self._publish_skip_warned = False
             logger.info("MQTT connected (client_id=%s)", self.client_id)
         else:
             logger.warning("MQTT connect returned rc=%s", rc)
@@ -181,7 +183,9 @@ class MQTTClient:
         resolved_topic = topic or self.data_topic
         try:
             if not self.ensure_connected():
-                logger.warning("Skipping publish to %s because MQTT is disconnected", resolved_topic)
+                if not self._publish_skip_warned:
+                    logger.warning("Skipping publish to %s because MQTT is disconnected", resolved_topic)
+                    self._publish_skip_warned = True
                 return None
             payload = json.dumps(packet, ensure_ascii=True)
             result = self.client.publish(resolved_topic, payload, qos=qos, retain=retain)
@@ -207,6 +211,7 @@ class MQTTClient:
         """
         self.client.loop_stop()
         self.client.disconnect()
+        self._publish_skip_warned = False
         logger.info("Disconnected from MQTT broker")
 
 

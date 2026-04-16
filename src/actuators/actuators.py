@@ -60,7 +60,11 @@ class ActuatorDriver:
 		"""Create gpiozero PWM devices for every mapped actuator pin."""
 		led_count = int(os.getenv("GREENHOUSE_NEOPIXEL_COUNT", "1"))
 		led_brightness = float(os.getenv("GREENHOUSE_NEOPIXEL_BRIGHTNESS", "1.0"))
-		self._led_driver = NeoPixelDriver(pixel_count=led_count, brightness=led_brightness)
+		self._led_driver = NeoPixelDriver(
+			pixel_count=led_count,
+			brightness=led_brightness,
+			log_transmissions=False,
+		)
 
 		for name, pin in self.PINS.items():
 			if name == "led":
