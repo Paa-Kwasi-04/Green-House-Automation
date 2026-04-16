@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
+User=root
 WorkingDirectory=/home/pi/greenhouse_project/Green-House-Automation/src
 Environment="PATH=/home/pi/greenhouse_project/Green-House-Automation/src/.venv/bin"
 Environment="GREENHOUSE_TAILSCALE_FUNNEL_URL=https://greenhouse-pi.taildaad3b.ts.net"

@@ -106,6 +106,8 @@ def main():
 	baudrate = _get_env_int("GREENHOUSE_SERIAL_BAUDRATE", 115200)
 	data_publish_interval = _get_env_float("GREENHOUSE_MQTT_PUBLISH_INTERVAL", 1.0)
 	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
+	pump_check_interval = _get_env_float("GREENHOUSE_PUMP_CHECK_INTERVAL", 3 * 60 * 60)
+	pump_pulse_seconds = _get_env_float("GREENHOUSE_PUMP_PULSE_SECONDS", 10.0)
 	http_enabled = os.getenv("GREENHOUSE_HTTP_ENABLED", "1").lower() not in {"0", "false", "no"}
 	http_host = os.getenv("GREENHOUSE_HTTP_HOST", "0.0.0.0")
 	http_port = _get_env_int("GREENHOUSE_HTTP_PORT", 8000)
@@ -223,9 +225,14 @@ def main():
 	try:
 		last_status = None
 		last_publish_time = 0.0
+		last_pump_check_time = 0.0
+		pump_pulse_until = 0.0
+		pump_pulse_pwm = 0
 		last_controlled = {}
 		last_control = {}
 		while True:
+			current_time = time.time()
+
 			# Ensure connections are active
 			mqtt_client.ensure_connected()
 			serial_comm.ensure_connected()
@@ -292,13 +299,38 @@ def main():
 						control_data = data.get("control", {})
 						last_controlled = controlled_data
 						last_control = control_data
-						outputs = controller.compute(controlled_data)
+						raw_outputs = controller.compute(controlled_data)
+						outputs = dict(raw_outputs)
+
+						# Pump is only evaluated on schedule; if dry, run a short pulse.
+						if current_time < pump_pulse_until:
+							outputs["pump_pwm"] = pump_pulse_pwm
+						else:
+							outputs["pump_pwm"] = 0
+							pump_due = (current_time - last_pump_check_time) >= pump_check_interval
+							if pump_due:
+								last_pump_check_time = current_time
+								requested_pump_pwm = int(raw_outputs.get("pump_pwm", 0))
+								if requested_pump_pwm > 0:
+									pump_pulse_pwm = requested_pump_pwm
+									pump_pulse_until = current_time + pump_pulse_seconds
+									outputs["pump_pwm"] = pump_pulse_pwm
+									logger.info(
+										"Pump pulse started: pwm=%d duration=%.1fs (check interval=%.0fs)",
+										pump_pulse_pwm,
+										pump_pulse_seconds,
+										pump_check_interval,
+									)
+								else:
+									logger.info(
+										"Pump check due; moisture is sufficient, skipping pulse (interval=%.0fs)",
+										pump_check_interval,
+									)
 						actuators.apply_outputs(outputs)
 						
 						# Log control cycle (sensors + outputs)
 						control_logger.log_control_cycle(controlled_data, outputs)
 
-			current_time = time.time()
 			if current_time - last_publish_time >= data_publish_interval:
 				packet = {
 					"timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],

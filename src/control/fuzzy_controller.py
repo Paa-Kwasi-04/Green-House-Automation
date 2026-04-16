@@ -61,13 +61,15 @@ class FuzzyController:
         self.H_set = self._get_env_float("GREENHOUSE_SETPOINT_HUMIDITY", 85.0)
         self.L_set = self._get_env_float("GREENHOUSE_SETPOINT_LIGHT", 150.0)
         self.M_set = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE", 65.0)
+        self.M_deadband = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE_DEADBAND", 5.0)
 
         logger.info(
-            "Fuzzy setpoints: T=%.2f, H=%.2f, L=%.2f, M=%.2f",
+            "Fuzzy setpoints: T=%.2f, H=%.2f, L=%.2f, M=%.2f (deadband=%.2f)",
             self.T_set,
             self.H_set,
             self.L_set,
             self.M_set,
+            self.M_deadband,
         )
 
         # Build systems
@@ -230,9 +232,12 @@ class FuzzyController:
         led_output = self.led_sim.output['led']
 
         # PUMP
-        self.pump_sim.input['moisture_error'] = eM
-        self.pump_sim.compute()
-        pump_output = self.pump_sim.output['pump']
+        if M >= (self.M_set - self.M_deadband):
+            pump_output = 0.0
+        else:
+            self.pump_sim.input['moisture_error'] = eM
+            self.pump_sim.compute()
+            pump_output = self.pump_sim.output['pump']
         
         # Convert to PWM
         humidifier_pwm = int((humidifier_output / 100) * 255)
