@@ -5,7 +5,7 @@ Hardware mapping (BCM numbering):
 	- Fan 2 (Intake) -> GPIO 17
 	- Fan 3 (Exhaust) -> GPIO 23
 	- pump -> GPIO 4
-	- LED -> GPIO 27
+	- LED (NeoPixel data) -> GPIO 18
 	- Humidifier -> GPIO 10
 """
 
@@ -18,6 +18,11 @@ import time
 from pathlib import Path
 from typing import Dict
 from gpiozero import PWMOutputDevice  # type: ignore[import-not-found]
+
+try:
+	from .Neopixel_driver import NeoPixelDriver
+except ImportError:
+	from Neopixel_driver import NeoPixelDriver
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +38,7 @@ class ActuatorDriver:
 		"fan_2": 17,
 		"fan_3": 23,
 		"pump": 4,
-		"led": 27,
+		"led": 18,
 		"humidifier": 10,
 	}
 
@@ -47,12 +52,19 @@ class ActuatorDriver:
 		"""
 		self.pwm_frequency = pwm_frequency
 		self._pwm_channels: Dict[str, PWMOutputDevice] = {}
+		self._led_driver: NeoPixelDriver | None = None
 		self._is_initialized = False
 		self._initialize_gpio()
 
 	def _initialize_gpio(self) -> None:
 		"""Create gpiozero PWM devices for every mapped actuator pin."""
+		led_count = int(os.getenv("GREENHOUSE_NEOPIXEL_COUNT", "1"))
+		led_brightness = float(os.getenv("GREENHOUSE_NEOPIXEL_BRIGHTNESS", "1.0"))
+		self._led_driver = NeoPixelDriver(pixel_count=led_count, brightness=led_brightness)
+
 		for name, pin in self.PINS.items():
+			if name == "led":
+				continue
 			device = PWMOutputDevice(
 				pin,
 				frequency=self.pwm_frequency,
@@ -61,7 +73,7 @@ class ActuatorDriver:
 			self._pwm_channels[name] = device
 
 		self._is_initialized = True
-		logger.info("Actuator GPIO initialized (BCM): %s", self.PINS)
+		logger.info("Actuator GPIO initialized (PWM pins): %s; LED via NeoPixel GPIO18", self.PINS)
 
 	@staticmethod
 	def _clamp(value: float, lower: float, upper: float) -> float:
@@ -109,6 +121,9 @@ class ActuatorDriver:
 			Actuator key in ``PINS``.
 		"""
 		self._require_actuator(name)
+		if name == "led":
+			self.set_led_pwm(255)
+			return
 		self._pwm_channels[name].on()
 
 	def set_off(self, name: str) -> None:
@@ -120,6 +135,9 @@ class ActuatorDriver:
 			Actuator key in ``PINS``.
 		"""
 		self._require_actuator(name)
+		if name == "led":
+			self.set_led_pwm(0)
+			return
 		self._pwm_channels[name].off()
 
 	def set_duty_cycle(self, name: str, duty_cycle: float) -> None:
@@ -134,6 +152,10 @@ class ActuatorDriver:
 		"""
 		self._require_actuator(name)
 		duty = self._clamp(float(duty_cycle), 0.0, 100.0)
+		if name == "led":
+			led_pwm = int((duty / 100.0) * 255)
+			self.set_led_pwm(led_pwm)
+			return
 		self._pwm_channels[name].value = duty / 100.0
 
 	def set_pwm_255(self, name: str, pwm_value: int) -> None:
@@ -149,6 +171,42 @@ class ActuatorDriver:
 		clamped = int(self._clamp(float(pwm_value), 0.0, 255.0))
 		duty = (clamped / 255.0) * 100.0
 		self.set_duty_cycle(name=name, duty_cycle=duty)
+
+	@staticmethod
+	def _exhaust_from_intake_pwm(intake_pwm: int) -> int:
+		"""Derive exhaust fan PWM from intake fan PWM.
+
+		Exhaust fan runs at 75% of intake fan PWM to keep balanced airflow.
+		"""
+		return int(intake_pwm * 0.75)
+
+	def set_humidifier_pwm(self, pwm_value: int) -> None:
+		"""Set humidifier PWM (0-255)."""
+		self.set_pwm_255("humidifier", pwm_value)
+
+	def set_fan_pwm(self, intake_pwm: int) -> None:
+		"""Set intake and exhaust fan PWM from a single intake command.
+
+		Parameters
+		----------
+		intake_pwm : int
+			Intake fan PWM value in range 0-255.
+		"""
+		intake = int(intake_pwm)
+		exhaust = self._exhaust_from_intake_pwm(intake)
+		self.set_pwm_255("fan_1", intake)
+		self.set_pwm_255("fan_2", intake)
+		self.set_pwm_255("fan_3", exhaust)
+
+	def set_led_pwm(self, pwm_value: int) -> None:
+		"""Set LED PWM (0-255)."""
+		if self._led_driver is None:
+			raise RuntimeError("NeoPixel LED driver is not initialized")
+		self._led_driver.set_white_pwm(int(pwm_value))
+
+	def set_pump_pwm(self, pwm_value: int) -> None:
+		"""Set pump PWM (0-255)."""
+		self.set_pwm_255("pump", pwm_value)
 
 	def apply_outputs(self, outputs: Dict[str, int]) -> None:
 		"""Apply fuzzy controller outputs to GPIO actuators.
@@ -169,18 +227,10 @@ class ActuatorDriver:
 		Exhaust fan (fan_3) runs at 75% of intake fan PWM to maintain
 		balanced air circulation and prevent negative pressure.
 		"""
-		humidifier_pwm = int(outputs.get("humidifier_pwm", 0))
-		fan_pwm = int(outputs.get("fan_pwm", 0))
-		exhaust_pwm = int(fan_pwm * 0.75)  # Exhaust at 75% of intake
-		led_pwm = int(outputs.get("led_pwm", 0))
-		pump_pwm = int(outputs.get("pump_pwm", 0))
-
-		self.set_pwm_255("humidifier", humidifier_pwm)
-		self.set_pwm_255("fan_1", fan_pwm)
-		self.set_pwm_255("fan_2", fan_pwm)
-		self.set_pwm_255("fan_3", exhaust_pwm)
-		self.set_pwm_255("led", led_pwm)
-		self.set_pwm_255("pump", pump_pwm)
+		self.set_humidifier_pwm(int(outputs.get("humidifier_pwm", 0)))
+		self.set_fan_pwm(int(outputs.get("fan_pwm", 0)))
+		self.set_led_pwm(int(outputs.get("led_pwm", 0)))
+		self.set_pump_pwm(int(outputs.get("pump_pwm", 0)))
 
 	def all_off(self) -> None:
 		"""Turn all actuators OFF without releasing GPIO resources."""
@@ -201,10 +251,13 @@ class ActuatorDriver:
 			self.all_off()
 			for pwm in self._pwm_channels.values():
 				pwm.close()
+			if self._led_driver is not None:
+				self._led_driver.cleanup()
 			logger.info("Actuator driver cleaned up")
 		finally:
 			self._is_initialized = False
 			self._pwm_channels.clear()
+			self._led_driver = None
 
 def main() -> None:
 	"""Run an actuator test loop driven by live serial sensor values.
@@ -264,10 +317,13 @@ def main() -> None:
 
 			outputs = controller.compute(controlled_data)
 			driver.apply_outputs(outputs)
+			logged_outputs = dict(outputs)
+			led_pwm = int(logged_outputs.pop("led_pwm", 0))
+			logged_outputs["led"] = round(led_pwm / 255.0, 3)
 			logger.info(
 				"Applied outputs from serial data: sensors=%s outputs=%s",
 				controlled_data,
-				outputs,
+				logged_outputs,
 			)
 	except KeyboardInterrupt:
 		if not quiet:
