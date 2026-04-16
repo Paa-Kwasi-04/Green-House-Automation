@@ -137,7 +137,7 @@ def resolve_public_base_url(http_public_host: str, http_port: int) -> str:
         return explicit_public
 
     funnel_public = _normalize_public_base_url(
-        os.getenv("GREENHOUSE_TAILSCALE_FUNNEL_URL", ""),
+        os.getenv("GREENHOUSE_TAILSCALE_FUNNEL_URL", "https://greenhouse-pi.taildaad3b.ts.net"),
         default_scheme="https",
     )
     if funnel_public:
