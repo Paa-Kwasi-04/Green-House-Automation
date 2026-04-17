@@ -228,10 +228,18 @@ def main():
 		last_pump_check_time = 0.0
 		pump_pulse_until = 0.0
 		pump_pulse_pwm = 0
+		raw_outputs_latest = {
+			"humidifier_pwm": 0,
+			"fan_pwm": 0,
+			"led_pwm": 0,
+			"pump_pwm": 0,
+		}
 		last_controlled = {}
 		last_control = {}
 		while True:
 			current_time = time.time()
+			has_fresh_control_data = False
+			fresh_controlled_data = None
 
 			# Ensure connections are active
 			mqtt_client.ensure_connected()
@@ -299,37 +307,43 @@ def main():
 						control_data = data.get("control", {})
 						last_controlled = controlled_data
 						last_control = control_data
-						raw_outputs = controller.compute(controlled_data)
-						outputs = dict(raw_outputs)
+						raw_outputs_latest = controller.compute(controlled_data)
+						has_fresh_control_data = True
+						fresh_controlled_data = controlled_data
 
-						# Pump is only evaluated on schedule; if dry, run a short pulse.
-						if current_time < pump_pulse_until:
-							outputs["pump_pwm"] = pump_pulse_pwm
-						else:
-							outputs["pump_pwm"] = 0
-							pump_due = (current_time - last_pump_check_time) >= pump_check_interval
-							if pump_due:
-								last_pump_check_time = current_time
-								requested_pump_pwm = int(raw_outputs.get("pump_pwm", 0))
-								if requested_pump_pwm > 0:
-									pump_pulse_pwm = requested_pump_pwm
-									pump_pulse_until = current_time + pump_pulse_seconds
-									outputs["pump_pwm"] = pump_pulse_pwm
-									logger.info(
-										"Pump pulse started: pwm=%d duration=%.1fs (check interval=%.0fs)",
-										pump_pulse_pwm,
-										pump_pulse_seconds,
-										pump_check_interval,
-									)
-								else:
-									logger.info(
-										"Pump check due; moisture is sufficient, skipping pulse (interval=%.0fs)",
-										pump_check_interval,
-									)
-						actuators.apply_outputs(outputs)
-						
-						# Log control cycle (sensors + outputs)
-						control_logger.log_control_cycle(controlled_data, outputs)
+			# Build effective actuator command every loop from latest control output.
+			outputs = dict(raw_outputs_latest)
+
+			# Pump is time-gated. Pulse timing is enforced even if serial input stalls.
+			if current_time < pump_pulse_until:
+				outputs["pump_pwm"] = pump_pulse_pwm
+			else:
+				outputs["pump_pwm"] = 0
+				pump_due = (current_time - last_pump_check_time) >= pump_check_interval
+				if pump_due and has_fresh_control_data:
+					last_pump_check_time = current_time
+					requested_pump_pwm = int(raw_outputs_latest.get("pump_pwm", 0))
+					if requested_pump_pwm > 0:
+						pump_pulse_pwm = requested_pump_pwm
+						pump_pulse_until = current_time + pump_pulse_seconds
+						outputs["pump_pwm"] = pump_pulse_pwm
+						logger.info(
+							"Pump pulse started: pwm=%d duration=%.1fs (check interval=%.0fs)",
+							pump_pulse_pwm,
+							pump_pulse_seconds,
+							pump_check_interval,
+						)
+					else:
+						logger.info(
+							"Pump check due; moisture is sufficient, skipping pulse (interval=%.0fs)",
+							pump_check_interval,
+						)
+
+			actuators.apply_outputs(outputs)
+
+			if has_fresh_control_data and fresh_controlled_data is not None:
+				# Log control cycle (sensors + effective outputs)
+				control_logger.log_control_cycle(fresh_controlled_data, outputs)
 
 			if current_time - last_publish_time >= data_publish_interval:
 				packet = {
