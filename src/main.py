@@ -227,6 +227,7 @@ def main():
 		last_status = None
 		last_telemetry_publish_time = 0.0
 		telemetry_post_warned = False
+		telemetry_post_fail_count = 0
 		last_pump_check_time = 0.0
 		pump_pulse_until = 0.0
 		pump_pulse_pwm = 0
@@ -363,15 +364,26 @@ def main():
 						timeout=telemetry_post_timeout,
 					)
 					if 200 <= status_code < 300:
+						if telemetry_post_warned:
+							logger.info(
+								"Telemetry posting recovered after %d failed attempt(s)",
+								telemetry_post_fail_count,
+							)
 						telemetry_post_warned = False
-						logger.debug("Telemetry posted to %s (status=%s): %s", telemetry_post_url, status_code, response_body)
+						telemetry_post_fail_count = 0
 					elif not telemetry_post_warned:
 						logger.warning("Telemetry post returned non-success status=%s: %s", status_code, response_body)
 						telemetry_post_warned = True
+						telemetry_post_fail_count = 1
+					else:
+						telemetry_post_fail_count += 1
 				except Exception as exc:
 					if not telemetry_post_warned:
 						logger.warning("Failed to post telemetry to %s: %s", telemetry_post_url, exc)
 						telemetry_post_warned = True
+						telemetry_post_fail_count = 1
+					else:
+						telemetry_post_fail_count += 1
 				last_telemetry_publish_time = current_time
 
 			time.sleep(loop_delay)

@@ -578,7 +578,15 @@ class HTTPServer:
                 )
 
             def log_message(self, format_text: str, *args) -> None:
-                logger.debug("HTTP %s - %s", self.address_string(), format_text % args)
+                status_code = None
+                if len(args) >= 2:
+                    try:
+                        status_code = int(args[1])
+                    except Exception:
+                        status_code = None
+
+                if status_code is not None and status_code >= 400:
+                    logger.warning("HTTP %s - %s", self.address_string(), format_text % args)
 
         return _ImageHandler
 

@@ -65,6 +65,29 @@ class SerialComm:
         self.connection_error_logged = False  # Track if we've logged connection errors this session
         self.last_parse_error_log = 0  # Throttle parse error logging to avoid spam
         self.parse_error_throttle_interval = 10.0  # Log parse errors at most once per 10 seconds
+        self._throttle_state = {}  # key -> {last: float, count: int}
+
+    def _log_throttled(self, level: int, key: str, interval_seconds: float, msg: str, *args) -> None:
+        """Log repeating events at most once per interval with suppressed count."""
+        now = time.time()
+        state = self._throttle_state.get(key)
+        if state is None:
+            self._throttle_state[key] = {"last": now, "count": 0}
+            logger.log(level, msg, *args)
+            return
+
+        elapsed = now - state["last"]
+        if elapsed >= interval_seconds:
+            suppressed = state["count"]
+            state["last"] = now
+            state["count"] = 0
+            if suppressed > 0:
+                logger.log(level, "%s (suppressed %d similar event(s))", msg, suppressed, *args)
+            else:
+                logger.log(level, msg, *args)
+            return
+
+        state["count"] += 1
 
     def _candidate_ports(self):
         """Build an ordered list of serial ports to try.
@@ -227,7 +250,13 @@ class SerialComm:
                 return line
             return None
         except Exception as e:
-            logger.error(f"Serial read failed: {e}")
+            self._log_throttled(
+                logging.ERROR,
+                "serial_read_failed",
+                10.0,
+                "Serial read failed: %s",
+                e,
+            )
             self.ser = None
             return None
         
@@ -331,7 +360,13 @@ class SerialComm:
 
             return data
         except Exception as e:
-            logger.error(f"Data parsing failed: {e}")
+            self._log_throttled(
+                logging.ERROR,
+                "parse_failed",
+                10.0,
+                "Data parsing failed: %s",
+                e,
+            )
             return None
 
     def close(self):
