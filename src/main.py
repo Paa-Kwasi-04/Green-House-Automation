@@ -6,11 +6,11 @@ import logging
 import shutil
 from datetime import datetime
 from urllib.parse import quote, urlparse
-from communication.mqtt import MQTTClient
 from communication.serial_comm import SerialComm
-from communication.http_image_server import (
-	ImageHTTPServer,
+from communication.http_server import (
+	HTTPServer,
 	post_image,
+	post_json,
 	detect_lan_ip,
 	resolve_public_base_url,
 	host_is_local_or_private,
@@ -85,8 +85,8 @@ def main():
 	"""Run greenhouse runtime loop.
 
 	The loop coordinates serial ingestion, fuzzy control outputs, actuator
-	updates, daily image capture/upload, HTTP image server hosting, CSV logging,
-	and periodic MQTT status publishing.
+	updates, daily image capture/upload, HTTP server hosting, CSV logging,
+	and periodic HTTP telemetry publishing.
 	"""
 	runtime_dir = os.getenv("GREENHOUSE_RUNTIME_DIR", _default_runtime_dir())
 	log_dir = os.getenv("GREENHOUSE_LOG_DIR", os.path.join(runtime_dir, "logs"))
@@ -99,13 +99,13 @@ def main():
 	setup_logging(log_dir=log_dir, log_level=logging.INFO)
 	
 	# Configuration
-	broker = os.getenv("GREENHOUSE_MQTT_BROKER", "test.mosquitto.org")
-	port = _get_env_int("GREENHOUSE_MQTT_PORT", 1883)
-	data_topic = os.getenv("GREENHOUSE_MQTT_DATA_TOPIC", "acity_greenhouse/paakwasi/data")
 	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
 	baudrate = _get_env_int("GREENHOUSE_SERIAL_BAUDRATE", 115200)
-	data_publish_interval = _get_env_float("GREENHOUSE_MQTT_PUBLISH_INTERVAL", 1.0)
+	telemetry_publish_interval = _get_env_float("GREENHOUSE_TELEMETRY_PUBLISH_INTERVAL", 1.0)
+	telemetry_post_timeout = _get_env_float("GREENHOUSE_TELEMETRY_POST_TIMEOUT", 5.0)
 	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
+	pump_check_interval = _get_env_float("GREENHOUSE_PUMP_CHECK_INTERVAL", 3 * 60 * 60)
+	pump_pulse_seconds = _get_env_float("GREENHOUSE_PUMP_PULSE_SECONDS", 10.0)
 	http_enabled = os.getenv("GREENHOUSE_HTTP_ENABLED", "1").lower() not in {"0", "false", "no"}
 	http_host = os.getenv("GREENHOUSE_HTTP_HOST", "0.0.0.0")
 	http_port = _get_env_int("GREENHOUSE_HTTP_PORT", 8000)
@@ -118,7 +118,11 @@ def main():
 	http_public_host = os.getenv("GREENHOUSE_HTTP_PUBLIC_HOST", detect_lan_ip())
 	public_base_url = resolve_public_base_url(http_public_host=http_public_host, http_port=http_port)
 	default_post_url = f"http://127.0.0.1:{http_port}/upload"
+	public_telemetry_url = f"{public_base_url}/telemetry"
+	default_telemetry_view_url = f"{public_base_url}/telemetry/view"
 	image_post_url = os.getenv("GREENHOUSE_POST_IMAGE_URL", default_post_url)
+	telemetry_post_url = os.getenv("GREENHOUSE_TELEMETRY_URL", public_telemetry_url)
+	telemetry_view_url = os.getenv("GREENHOUSE_TELEMETRY_VIEW_URL", default_telemetry_view_url)
 	image_base_url = os.getenv("GREENHOUSE_IMAGE_BASE_URL", f"{public_base_url}/images")
 	latest_image_url = os.getenv("GREENHOUSE_LATEST_IMAGE_URL", f"{public_base_url}/latest")
 	default_stream_url = f"{public_base_url}/stream"
@@ -127,7 +131,7 @@ def main():
 
 	if host_is_local_or_private(public_url_host):
 		logger.warning(
-			"Resolved public URL host is local/private (%s). External networks may not reach URLs in MQTT. "
+			"Resolved public URL host is local/private (%s). External networks may not reach URLs in HTTP. "
 			"Set GREENHOUSE_PUBLIC_BASE_URL or GREENHOUSE_TAILSCALE_FUNNEL_URL.",
 			public_url_host,
 		)
@@ -144,10 +148,11 @@ def main():
 		)
 
 	logger.info(
-		"Runtime config: MQTT=%s:%s topic=%s, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s public_host=%s public_base=%s stream_fps=%.2f stream_size=%sx%s stream_url=%s latest_url=%s capture=%02d:%02d",
-		broker,
-		port,
-		data_topic,
+		"Runtime config: telemetry_post_url=%s public_telemetry_url=%s telemetry_view_url=%s interval=%.2fs, serial=%s @ %s baud, live_dir=%s, weekly_dir=%s, image_dir=%s, log_dir=%s, http=%s:%s enabled=%s public_host=%s public_base=%s stream_fps=%.2f stream_size=%sx%s stream_url=%s latest_url=%s capture=%02d:%02d",
+		telemetry_post_url,
+		public_telemetry_url,
+		telemetry_view_url,
+		telemetry_publish_interval,
 		serial_port,
 		baudrate,
 		live_data_dir,
@@ -175,7 +180,6 @@ def main():
 		timeout=1,
 		reconnect_interval=0.5,
 	)
-	mqtt_client = MQTTClient(broker=broker, port=port, data_topic=data_topic)
 	controller = FuzzyController()
 	actuators = ActuatorDriver()
 	
@@ -195,7 +199,7 @@ def main():
 	camera = Camera(image_dir=image_dir, stream_size=(http_stream_width, http_stream_height))
 	http_server = None
 	if http_enabled:
-		http_server = ImageHTTPServer(
+		http_server = HTTPServer(
 			host=http_host,
 			port=http_port,
 			upload_dir=http_upload_dir,
@@ -204,9 +208,9 @@ def main():
 		)
 		try:
 			http_server.start()
-			logger.info("HTTP image server started at http://%s:%s (upload_dir=%s)", http_host, http_port, http_upload_dir)
+			logger.info("HTTP server started at http://%s:%s (upload_dir=%s)", http_host, http_port, http_upload_dir)
 		except OSError as exc:
-			logger.error("Unable to start HTTP image server: %s", exc)
+			logger.error("Unable to start HTTP server: %s", exc)
 			http_server = None
 
 	last_capture_day = None
@@ -215,19 +219,31 @@ def main():
 		logger.info("Using last served image URL at startup: %s", last_image_url)
 
 	# Connect
-	mqtt_client.connect()
 	serial_comm.connect()
 
 	logger.info("Starting greenhouse control loop...")
 
 	try:
 		last_status = None
-		last_publish_time = 0.0
+		last_telemetry_publish_time = 0.0
+		telemetry_post_warned = False
+		last_pump_check_time = 0.0
+		pump_pulse_until = 0.0
+		pump_pulse_pwm = 0
+		raw_outputs_latest = {
+			"humidifier_pwm": 0,
+			"fan_pwm": 0,
+			"led_pwm": 0,
+			"pump_pwm": 0,
+		}
 		last_controlled = {}
 		last_control = {}
 		while True:
+			current_time = time.time()
+			has_fresh_control_data = False
+			fresh_controlled_data = None
+
 			# Ensure connections are active
-			mqtt_client.ensure_connected()
 			serial_comm.ensure_connected()
 
 			# Status handling
@@ -292,14 +308,45 @@ def main():
 						control_data = data.get("control", {})
 						last_controlled = controlled_data
 						last_control = control_data
-						outputs = controller.compute(controlled_data)
-						actuators.apply_outputs(outputs)
-						
-						# Log control cycle (sensors + outputs)
-						control_logger.log_control_cycle(controlled_data, outputs)
+						raw_outputs_latest = controller.compute(controlled_data)
+						has_fresh_control_data = True
+						fresh_controlled_data = controlled_data
 
-			current_time = time.time()
-			if current_time - last_publish_time >= data_publish_interval:
+			# Build effective actuator command every loop from latest control output.
+			outputs = dict(raw_outputs_latest)
+
+			# Pump is time-gated. Pulse timing is enforced even if serial input stalls.
+			if current_time < pump_pulse_until:
+				outputs["pump_pwm"] = pump_pulse_pwm
+			else:
+				outputs["pump_pwm"] = 0
+				pump_due = (current_time - last_pump_check_time) >= pump_check_interval
+				if pump_due and has_fresh_control_data:
+					last_pump_check_time = current_time
+					requested_pump_pwm = int(raw_outputs_latest.get("pump_pwm", 0))
+					if requested_pump_pwm > 0:
+						pump_pulse_pwm = requested_pump_pwm
+						pump_pulse_until = current_time + pump_pulse_seconds
+						outputs["pump_pwm"] = pump_pulse_pwm
+						logger.info(
+							"Pump pulse started: pwm=%d duration=%.1fs (check interval=%.0fs)",
+							pump_pulse_pwm,
+							pump_pulse_seconds,
+							pump_check_interval,
+						)
+					else:
+						logger.info(
+							"Pump check due; moisture is sufficient, skipping pulse (interval=%.0fs)",
+							pump_check_interval,
+						)
+
+			actuators.apply_outputs(outputs)
+
+			if has_fresh_control_data and fresh_controlled_data is not None:
+				# Log control cycle (sensors + effective outputs)
+				control_logger.log_control_cycle(fresh_controlled_data, outputs)
+
+			if current_time - last_telemetry_publish_time >= telemetry_publish_interval:
 				packet = {
 					"timestamp": now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
 					"status": current_status,
@@ -309,9 +356,23 @@ def main():
 					"stream": stream_url,
 				}
 
-				# Retain the latest status packet so new subscribers receive endpoints immediately.
-				mqtt_client.publish_data_packet(packet, qos=1, retain=True)
-				last_publish_time = current_time
+				try:
+					status_code, response_body = post_json(
+						packet,
+						telemetry_post_url,
+						timeout=telemetry_post_timeout,
+					)
+					if 200 <= status_code < 300:
+						telemetry_post_warned = False
+						logger.debug("Telemetry posted to %s (status=%s): %s", telemetry_post_url, status_code, response_body)
+					elif not telemetry_post_warned:
+						logger.warning("Telemetry post returned non-success status=%s: %s", status_code, response_body)
+						telemetry_post_warned = True
+				except Exception as exc:
+					if not telemetry_post_warned:
+						logger.warning("Failed to post telemetry to %s: %s", telemetry_post_url, exc)
+						telemetry_post_warned = True
+				last_telemetry_publish_time = current_time
 
 			time.sleep(loop_delay)
 
@@ -322,7 +383,6 @@ def main():
 			http_server.stop()
 		camera.shutdown()
 		actuators.cleanup()
-		mqtt_client.disconnect()
 		serial_comm.close()
 		sensor_logger.close()
 		control_logger.close()

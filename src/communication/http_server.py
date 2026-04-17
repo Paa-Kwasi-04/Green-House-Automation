@@ -1,4 +1,4 @@
-"""HTTP image server and uploader utilities for greenhouse photos."""
+"""HTTP server and uploader utilities for greenhouse runtime data."""
 
 import json
 import ipaddress
@@ -137,7 +137,7 @@ def resolve_public_base_url(http_public_host: str, http_port: int) -> str:
         return explicit_public
 
     funnel_public = _normalize_public_base_url(
-        os.getenv("GREENHOUSE_TAILSCALE_FUNNEL_URL", ""),
+        os.getenv("GREENHOUSE_TAILSCALE_FUNNEL_URL", "https://greenhouse-pi.taildaad3b.ts.net"),
         default_scheme="https",
     )
     if funnel_public:
@@ -195,8 +195,8 @@ def latest_served_image_url(upload_dir: str, image_base_url: str) -> Optional[st
         return None
 
 
-class ImageHTTPServer:
-    """Small threaded HTTP server to receive and serve greenhouse images.
+class HTTPServer:
+    """Small threaded HTTP server to serve greenhouse stream, images, and telemetry.
 
     Parameters
     ----------
@@ -219,12 +219,14 @@ class ImageHTTPServer:
         upload_dir: str = "uploads",
         frame_provider: Optional[Callable[[], bytes]] = None,
         stream_fps: float = 2.0,
+        telemetry_filename: str = "telemetry.json",
     ):
         self.host = host
         self.port = port
         self.upload_dir = upload_dir
         self.frame_provider = frame_provider
         self.stream_fps = stream_fps
+        self.telemetry_filename = telemetry_filename
         os.makedirs(self.upload_dir, exist_ok=True)
 
         self._server: Optional[ThreadingHTTPServer] = None
@@ -237,7 +239,13 @@ class ImageHTTPServer:
             return
 
         self._stop_event.clear()
-        handler = self._build_handler(self.upload_dir, self.frame_provider, self.stream_fps, self._stop_event)
+        handler = self._build_handler(
+            self.upload_dir,
+            self.frame_provider,
+            self.stream_fps,
+            self._stop_event,
+            self.telemetry_filename,
+        )
         self._server = ThreadingHTTPServer((self.host, self.port), handler)
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -263,14 +271,25 @@ class ImageHTTPServer:
         frame_provider: Optional[Callable[[], bytes]],
         stream_fps: float,
         stop_event: threading.Event,
+        telemetry_filename: str,
     ):
         frame_interval = 1.0 / max(stream_fps, 0.1)
+        telemetry_path = os.path.join(upload_dir, telemetry_filename)
 
         class _ImageHandler(BaseHTTPRequestHandler):
             def _send_json(self, status_code: int, payload: dict) -> None:
                 body = json.dumps(payload).encode("utf-8")
                 self.send_response(status_code)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _send_html(self, status_code: int, html: str) -> None:
+                body = html.encode("utf-8")
+                self.send_response(status_code)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -348,6 +367,100 @@ class ImageHTTPServer:
 
                 return max(candidates, key=os.path.getmtime)
 
+            def _telemetry_path(self) -> str:
+                return telemetry_path
+
+            def _telemetry_dashboard_html(self) -> str:
+                return """<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Greenhouse Telemetry</title>
+    <style>
+        :root {
+            color-scheme: light;
+        }
+        body {
+            margin: 0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            background: #f3f5f7;
+            color: #0f172a;
+        }
+        .wrap {
+            max-width: 960px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        .card {
+            background: #ffffff;
+            border: 1px solid #dbe1e6;
+            border-radius: 12px;
+            padding: 1rem;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+        }
+        h1 {
+            margin: 0 0 0.5rem 0;
+            font-size: 1.2rem;
+        }
+        .muted {
+            color: #475569;
+            margin-bottom: 1rem;
+        }
+        .ok {
+            color: #166534;
+        }
+        .bad {
+            color: #991b1b;
+        }
+        pre {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            margin: 0;
+            font-size: 0.9rem;
+            line-height: 1.35;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="card">
+            <h1>Greenhouse Telemetry (Live)</h1>
+            <div id="meta" class="muted">Loading...</div>
+            <pre id="payload">Waiting for telemetry...</pre>
+        </div>
+    </div>
+
+    <script>
+        const payloadEl = document.getElementById("payload");
+        const metaEl = document.getElementById("meta");
+
+        async function refreshTelemetry() {
+            try {
+                const response = await fetch("/telemetry?t=" + Date.now(), { cache: "no-store" });
+                if (!response.ok) {
+                    metaEl.className = "muted bad";
+                    metaEl.textContent = "Telemetry unavailable (HTTP " + response.status + ")";
+                    return;
+                }
+                const json = await response.json();
+                const now = new Date().toLocaleTimeString();
+                metaEl.className = "muted ok";
+                metaEl.textContent = "Last update: " + now + " | Auto-refresh: 1s";
+                payloadEl.textContent = JSON.stringify(json, null, 2);
+            } catch (error) {
+                metaEl.className = "muted bad";
+                metaEl.textContent = "Connection error: " + String(error);
+            }
+        }
+
+        refreshTelemetry();
+        setInterval(refreshTelemetry, 1000);
+    </script>
+</body>
+</html>
+"""
+
             def do_GET(self) -> None:
                 parsed = urlparse(self.path)
                 request_path = parsed.path
@@ -366,6 +479,17 @@ class ImageHTTPServer:
                         self._send_json(404, {"error": "No images available"})
                         return
                     self._send_file(latest)
+                    return
+
+                if request_path == "/telemetry":
+                    if not os.path.isfile(self._telemetry_path()):
+                        self._send_json(404, {"error": "No telemetry available"})
+                        return
+                    self._send_file(self._telemetry_path())
+                    return
+
+                if request_path == "/telemetry/view":
+                    self._send_html(200, self._telemetry_dashboard_html())
                     return
 
                 if request_path == "/stream":
@@ -388,6 +512,35 @@ class ImageHTTPServer:
             def do_POST(self) -> None:
                 parsed = urlparse(self.path)
                 request_path = parsed.path
+
+                if request_path == "/telemetry":
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    if content_length <= 0:
+                        self._send_json(400, {"error": "Empty body"})
+                        return
+
+                    body = self.rfile.read(content_length)
+                    try:
+                        decoded = body.decode("utf-8")
+                        json.loads(decoded)
+                    except Exception:
+                        self._send_json(400, {"error": "Invalid JSON"})
+                        return
+
+                    temp_path = f"{self._telemetry_path()}.tmp"
+                    with open(temp_path, "w", encoding="utf-8") as file_obj:
+                        file_obj.write(decoded)
+                    os.replace(temp_path, self._telemetry_path())
+
+                    self._send_json(
+                        201,
+                        {
+                            "message": "Telemetry stored",
+                            "filename": os.path.basename(self._telemetry_path()),
+                            "size": len(body),
+                        },
+                    )
+                    return
 
                 if request_path != "/upload":
                     self._send_json(404, {"error": "Not found"})
@@ -429,6 +582,9 @@ class ImageHTTPServer:
 
         return _ImageHandler
 
+# Backward-compatible alias for older imports.
+ImageHTTPServer = HTTPServer
+
 
 def post_image(image_path: str, url: str, timeout: float = 5.0, verify_tls: bool = True) -> Tuple[int, str]:
     """Post a local image file as raw bytes to an HTTP endpoint.
@@ -459,6 +615,44 @@ def post_image(image_path: str, url: str, timeout: float = 5.0, verify_tls: bool
         headers={
             "Content-Type": "image/jpeg",
             "X-Filename": os.path.basename(image_path),
+        },
+    )
+
+    ssl_context = None
+    if url.lower().startswith("https://") and not verify_tls:
+        ssl_context = ssl._create_unverified_context()
+
+    with request.urlopen(req, timeout=timeout, context=ssl_context) as response:
+        body = response.read().decode("utf-8", errors="replace")
+        return response.getcode(), body
+
+
+def post_json(payload: dict, url: str, timeout: float = 5.0, verify_tls: bool = True) -> Tuple[int, str]:
+    """Post a JSON payload to an HTTP endpoint.
+
+    Parameters
+    ----------
+    payload : dict
+        JSON-serializable data to send.
+    url : str
+        HTTP/HTTPS endpoint URL that accepts ``POST`` requests.
+    timeout : float, optional
+        Request timeout in seconds.
+    verify_tls : bool, optional
+        Whether TLS certificate verification should be enforced for HTTPS.
+
+    Returns
+    -------
+    tuple of (int, str)
+        HTTP status code and decoded response body.
+    """
+    data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+    req = request.Request(
+        url=url,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
         },
     )
 
