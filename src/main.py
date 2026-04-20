@@ -328,6 +328,9 @@ def main():
 			current_humidity = last_controlled.get("humidity")
 			if current_humidity is None or current_humidity >= 50.0:
 				outputs["humidifier_pwm"] = 0
+			else:  # output high that 255
+				outputs["humidifier_pwm"] = 255  
+
 
 			# Pump is time-gated. Pulse timing is enforced even if serial input stalls.
 			if current_time < pump_pulse_until:
