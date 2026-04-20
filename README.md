@@ -131,7 +131,7 @@ Green-House-Automation/
 - Python 3.7+
 - Arduino with sensor setup
 - Raspberry Pi with camera module
-- Root / sudo access required for NeoPixel GPIO18 hardware access (`/dev/mem`)
+- Root / sudo access required for NeoPixel GPIO18 hardware access (`/dev/mem`). When using a virtualenv, pass the interpreter explicitly: `sudo /path/to/venv/bin/python main.py`
 
 ### Install Dependencies
 ```bash
@@ -207,11 +207,6 @@ export GREENHOUSE_SERIAL_PORT=/dev/ttyUSB0
 cd src
 sudo python main.py
 ```
-
-> **Note:** `sudo` (or running as root) is required for NeoPixel access to `/dev/mem`. When using a virtualenv, pass the venv interpreter explicitly:
-> ```bash
-> sudo /path/to/venv/bin/python main.py
-> ```
 
 **Example – run with a custom HTTP port:**
 ```bash
