@@ -323,6 +323,12 @@ def main():
 			# Build effective actuator command every loop from latest control output.
 			outputs = dict(raw_outputs_latest)
 
+			# Humidifier is humidity-gated in the runtime loop.
+			# Only allow controller PWM when humidity is below 50%.
+			current_humidity = last_controlled.get("humidity")
+			if current_humidity is None or current_humidity >= 50.0:
+				outputs["humidifier_pwm"] = 0
+
 			# Pump is time-gated. Pulse timing is enforced even if serial input stalls.
 			if current_time < pump_pulse_until:
 				outputs["pump_pwm"] = pump_pulse_pwm
