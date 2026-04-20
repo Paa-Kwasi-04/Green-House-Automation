@@ -94,9 +94,16 @@ def main():
 	weekly_data_dir = os.getenv("GREENHOUSE_WEEKLY_DIR", os.path.join(runtime_dir, "weekly"))
 	image_dir = os.getenv("GREENHOUSE_IMAGE_DIR", os.path.join(runtime_dir, "image"))
 	http_upload_dir = os.getenv("GREENHOUSE_HTTP_UPLOAD_DIR", os.path.join(image_dir, "posted"))
+	file_log_level_name = os.getenv("GREENHOUSE_FILE_LOG_LEVEL", "INFO").upper()
+	file_log_level = getattr(logging, file_log_level_name, logging.INFO)
+	invalid_file_log_level = not isinstance(file_log_level, int)
+	if invalid_file_log_level:
+		file_log_level = logging.INFO
 
 	# Setup centralized logging with file rotation and date grouping
-	setup_logging(log_dir=log_dir, log_level=logging.INFO)
+	setup_logging(log_dir=log_dir, log_level=logging.INFO, file_log_level=file_log_level)
+	if invalid_file_log_level:
+		logger.warning("Invalid GREENHOUSE_FILE_LOG_LEVEL=%s; using INFO", file_log_level_name)
 	
 	# Configuration
 	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
@@ -104,8 +111,8 @@ def main():
 	telemetry_publish_interval = _get_env_float("GREENHOUSE_TELEMETRY_PUBLISH_INTERVAL", 1.0)
 	telemetry_post_timeout = _get_env_float("GREENHOUSE_TELEMETRY_POST_TIMEOUT", 5.0)
 	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
-	pump_check_interval = _get_env_float("GREENHOUSE_PUMP_CHECK_INTERVAL", 3 * 60 * 60)
-	pump_pulse_seconds = _get_env_float("GREENHOUSE_PUMP_PULSE_SECONDS", 10.0)
+	pump_check_interval = _get_env_float("GREENHOUSE_PUMP_CHECK_INTERVAL", 6 * 60 * 60)
+	pump_pulse_seconds = _get_env_float("GREENHOUSE_PUMP_PULSE_SECONDS", 5.0)
 	http_enabled = os.getenv("GREENHOUSE_HTTP_ENABLED", "1").lower() not in {"0", "false", "no"}
 	http_host = os.getenv("GREENHOUSE_HTTP_HOST", "0.0.0.0")
 	http_port = _get_env_int("GREENHOUSE_HTTP_PORT", 8000)

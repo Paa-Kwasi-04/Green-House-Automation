@@ -111,9 +111,10 @@ class LoggerSetup:
         Full path to the current log file.
     """
     
-    def __init__(self, log_dir: str = "logs", log_level: int = logging.INFO):
+    def __init__(self, log_dir: str = "logs", log_level: int = logging.INFO, file_log_level: int = logging.INFO):
         """Initialize logging setup with file and console handlers."""
         self.log_dir = log_dir
+        self.file_log_level = file_log_level
         
         # Create logs directory if it doesn't exist
         if not os.path.exists(self.log_dir):
@@ -162,7 +163,7 @@ class LoggerSetup:
             maxBytes=10*1024*1024,  # 10MB
             backupCount=5
         )
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(self.file_log_level)
         file_handler.setFormatter(file_formatter)
         file_handler.addFilter(date_filter)
         root_logger.addHandler(file_handler)
@@ -194,7 +195,7 @@ class LoggerSetup:
         return logging.getLogger(name)
 
 
-def setup_logging(log_dir: str = "logs", log_level: int = logging.INFO):
+def setup_logging(log_dir: str = "logs", log_level: int = logging.INFO, file_log_level: int = logging.INFO):
     """
     Convenience function to quickly setup logging.
     
@@ -216,7 +217,7 @@ def setup_logging(log_dir: str = "logs", log_level: int = logging.INFO):
     >>> logger = logging.getLogger(__name__)
     >>> logger.info("Application started")
     """
-    setup = LoggerSetup(log_dir=log_dir)
+    setup = LoggerSetup(log_dir=log_dir, file_log_level=file_log_level)
     setup.setup()
     
     # Set console handler level

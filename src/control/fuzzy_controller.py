@@ -275,6 +275,8 @@ def main():
     controller = FuzzyController()
     serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
     baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
+    loop_delay = float(os.getenv("GREENHOUSE_LOOP_DELAY", "0.1"))
+    log_interval = float(os.getenv("GREENHOUSE_FUZZY_LOG_INTERVAL", "5.0"))
 
     serial_comm = SerialComm(
         port=serial_port,
@@ -287,6 +289,7 @@ def main():
     logger.info("Starting fuzzy controller loop...")
 
     try:
+        last_info_log_time = 0.0
         while True:
             serial_comm.ensure_connected()
             if serial_comm.is_connected():
@@ -297,9 +300,19 @@ def main():
                         # Use controlled section data for fuzzy logic
                         sensor_data = parsed_data['controlled']
                         outputs = controller.compute(sensor_data)
-                        logger.info(f"Inputs: T={sensor_data['temperature']:.1f}, H={sensor_data['humidity']:.1f}, CO2={sensor_data['co2']:.0f}, L={sensor_data['light']:.0f}, M={sensor_data['moisture']:.1f}")
-                        logger.info(f"Outputs: {outputs}")
-            time.sleep(0.1)
+                        now_monotonic = time.monotonic()
+                        if now_monotonic - last_info_log_time >= log_interval:
+                            logger.info(
+                                "Inputs: T=%.1f, H=%.1f, CO2=%.0f, L=%.0f, M=%.1f | Outputs: %s",
+                                sensor_data['temperature'],
+                                sensor_data['humidity'],
+                                sensor_data['co2'],
+                                sensor_data['light'],
+                                sensor_data['moisture'],
+                                outputs,
+                            )
+                            last_info_log_time = now_monotonic
+            time.sleep(loop_delay)
     except KeyboardInterrupt:
         logger.info("Stopping fuzzy controller...")
     finally:

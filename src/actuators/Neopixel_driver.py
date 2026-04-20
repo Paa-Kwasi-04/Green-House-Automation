@@ -40,7 +40,7 @@ class NeoPixelDriver:
 	def __init__(
 		self,
 		pin=board.D18,
-		pixel_count: int = 1,
+		pixel_count: int = 120,
 		brightness: float = 1.0,
 		auto_write: bool = False,
 		log_transmissions: bool | None = None,
@@ -154,7 +154,7 @@ def main() -> None:
 	"""Small manual test routine for NeoPixel brightness on GPIO18."""
 	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-	pixel_count = int(os.getenv("GREENHOUSE_NEOPIXEL_COUNT", "1"))
+	pixel_count = int(os.getenv("GREENHOUSE_NEOPIXEL_COUNT", "120"))
 	delay = float(os.getenv("GREENHOUSE_NEOPIXEL_TEST_DELAY", "0.25"))
 
 	try:
@@ -164,9 +164,12 @@ def main() -> None:
 		raise SystemExit(1) from exc
 
 	try:
-		for value in (0, 32, 64, 128, 192, 255, 128, 64, 0):
-			logger.info("Setting NeoPixel white PWM to %d", value)
-			driver.set_white_pwm(value)
+		# for value in (0, 32, 64, 128, 192, 255, 128, 64, 0):
+		# 	logger.info("Setting NeoPixel white PWM to %d", value)
+		# 	driver.set_white_pwm(value)
+		# 	time.sleep(delay)
+		while True:
+			driver.set_white_pwm(255)
 			time.sleep(delay)
 	except KeyboardInterrupt:
 		logger.info("NeoPixel test interrupted")

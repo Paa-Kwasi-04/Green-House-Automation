@@ -2,8 +2,8 @@
 
 Hardware mapping (BCM numbering):
 	- Fan 1 (Intake) -> GPIO 22
-	- Fan 2 (Intake) -> GPIO 17
-	- Fan 3 (Exhaust) -> GPIO 23
+	- Fan 2 (Intake) -> GPIO 24
+	- Fan 3 (Exhaust) -> GPIO 17
 	- pump -> GPIO 4
 	- LED (NeoPixel data) -> GPIO 18
 	- Humidifier -> GPIO 10
@@ -31,12 +31,14 @@ class ActuatorDriver:
 	"""Controls greenhouse actuators connected through MOSFET modules.
 
 	Uses BCM pin numbering via gpiozero and supports both direct ON/OFF and PWM duty control.
+	Intake fans are ``fan_1`` and ``fan_2``. Exhaust fan is ``fan_3`` and runs
+	from a configurable intake-derived model in ``set_fan_pwm``.
 	"""
 
 	PINS: Dict[str, int] = {
 		"fan_1": 22,
-		"fan_2": 17,
-		"fan_3": 23,
+		"fan_2": 24,
+		"fan_3": 17,
 		"pump": 4,
 		"led": 18,
 		"humidifier": 10,
@@ -51,14 +53,42 @@ class ActuatorDriver:
 			PWM base frequency in Hz used for all channels.
 		"""
 		self.pwm_frequency = pwm_frequency
+		self.exhaust_ratio = self._get_env_float("GREENHOUSE_EXHAUST_RATIO", 0.15)
+		self.exhaust_min_pwm = self._get_env_int("GREENHOUSE_EXHAUST_MIN_PWM", 95)
+		self.exhaust_start_boost_pwm = self._get_env_int("GREENHOUSE_EXHAUST_START_BOOST_PWM", 20)
+		self.exhaust_max_pwm = self._get_env_int("GREENHOUSE_EXHAUST_MAX_PWM", 255)
 		self._pwm_channels: Dict[str, PWMOutputDevice] = {}
 		self._led_driver: NeoPixelDriver | None = None
 		self._is_initialized = False
 		self._initialize_gpio()
 
+	@staticmethod
+	def _get_env_float(name: str, default: float) -> float:
+		"""Read float env var with fallback and warning on invalid values."""
+		raw = os.getenv(name)
+		if raw is None:
+			return default
+		try:
+			return float(raw)
+		except ValueError:
+			logger.warning("Invalid float for %s=%r; using default %s", name, raw, default)
+			return default
+
+	@staticmethod
+	def _get_env_int(name: str, default: int) -> int:
+		"""Read integer env var with fallback and warning on invalid values."""
+		raw = os.getenv(name)
+		if raw is None:
+			return default
+		try:
+			return int(raw)
+		except ValueError:
+			logger.warning("Invalid int for %s=%r; using default %s", name, raw, default)
+			return default
+
 	def _initialize_gpio(self) -> None:
 		"""Create gpiozero PWM devices for every mapped actuator pin."""
-		led_count = int(os.getenv("GREENHOUSE_NEOPIXEL_COUNT", "1"))
+		led_count = 120
 		led_brightness = float(os.getenv("GREENHOUSE_NEOPIXEL_BRIGHTNESS", "1.0"))
 		self._led_driver = NeoPixelDriver(
 			pixel_count=led_count,
@@ -176,27 +206,47 @@ class ActuatorDriver:
 		duty = (clamped / 255.0) * 100.0
 		self.set_duty_cycle(name=name, duty_cycle=duty)
 
-	@staticmethod
-	def _exhaust_from_intake_pwm(intake_pwm: int) -> int:
-		"""Derive exhaust fan PWM from intake fan PWM.
-
-		Exhaust fan runs at 75% of intake fan PWM to keep balanced airflow.
-		"""
-		return int(intake_pwm * 0.75)
-
 	def set_humidifier_pwm(self, pwm_value: int) -> None:
 		"""Set humidifier PWM (0-255)."""
 		self.set_pwm_255("humidifier", pwm_value)
 
+	def _exhaust_from_intake_pwm(self, intake_pwm: int) -> int:
+		"""Derive exhaust PWM from intake PWM using configurable airflow compensation.
+
+		The mapping is tuned for setups where intake fans move more air than exhaust
+		fans by applying ratio scaling, startup boost, and a minimum spin threshold.
+		"""
+		intake = int(self._clamp(float(intake_pwm), 0.0, 255.0))
+		if intake <= 0:
+			return 0
+
+		min_pwm = int(self._clamp(float(self.exhaust_min_pwm), 0.0, 255.0))
+		max_pwm = int(self._clamp(float(self.exhaust_max_pwm), 0.0, 255.0))
+		if max_pwm < min_pwm:
+			max_pwm = min_pwm
+
+		derived = int(intake * self.exhaust_ratio) + int(self.exhaust_start_boost_pwm)
+		exhaust = max(min_pwm, derived)
+		return int(self._clamp(float(exhaust), 0.0, float(max_pwm)))
+
 	def set_fan_pwm(self, intake_pwm: int) -> None:
-		"""Set intake and exhaust fan PWM from a single intake command.
+		"""Set intake and exhaust fan PWM from one intake PWM input.
 
 		Parameters
 		----------
 		intake_pwm : int
 			Intake fan PWM value in range 0-255.
+
+		Notes
+		-----
+		Both intake fans (``fan_1`` and ``fan_2``) receive ``intake_pwm``.
+		Exhaust fan (``fan_3``) PWM is derived using the configurable model:
+		- ``GREENHOUSE_EXHAUST_RATIO`` (default: 1.15)
+		- ``GREENHOUSE_EXHAUST_START_BOOST_PWM`` (default: 20)
+		- ``GREENHOUSE_EXHAUST_MIN_PWM`` (default: 95)
+		- ``GREENHOUSE_EXHAUST_MAX_PWM`` (default: 255)
 		"""
-		intake = int(intake_pwm)
+		intake = int(self._clamp(float(intake_pwm), 0.0, 255.0))
 		exhaust = self._exhaust_from_intake_pwm(intake)
 		self.set_pwm_255("fan_1", intake)
 		self.set_pwm_255("fan_2", intake)
@@ -206,7 +256,8 @@ class ActuatorDriver:
 		"""Set LED PWM (0-255)."""
 		if self._led_driver is None:
 			raise RuntimeError("NeoPixel LED driver is not initialized")
-		self._led_driver.set_white_pwm(int(pwm_value))
+		level = int(self._clamp(float(pwm_value), 0.0, 255.0))
+		self._led_driver.set_white_pwm(level)
 
 	def set_pump_pwm(self, pwm_value: int) -> None:
 		"""Set pump PWM (0-255)."""
@@ -220,7 +271,8 @@ class ActuatorDriver:
 		outputs : dict of str to int
 			Controller output dictionary.
 
-		Expected keys:
+		Expected keys
+		-------------
 		- humidifier_pwm
 		- fan_pwm (applied to intake fans: fan_1 and fan_2)
 		- led_pwm
@@ -228,8 +280,8 @@ class ActuatorDriver:
 
 		Notes
 		-----
-		Exhaust fan (fan_3) runs at 75% of intake fan PWM to maintain
-		balanced air circulation and prevent negative pressure.
+		Exhaust fan (fan_3) PWM is derived from intake fan PWM using a
+		configurable ratio + startup boost + min/max thresholds.
 		"""
 		self.set_humidifier_pwm(int(outputs.get("humidifier_pwm", 0)))
 		self.set_fan_pwm(int(outputs.get("fan_pwm", 0)))
@@ -290,6 +342,7 @@ def main() -> None:
 	serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
 	baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
 	loop_delay = float(os.getenv("GREENHOUSE_LOOP_DELAY", "0.1"))
+	log_interval = float(os.getenv("GREENHOUSE_ACTUATOR_LOG_INTERVAL", "5.0"))
 
 	driver = ActuatorDriver()
 	controller = FuzzyController()
@@ -304,6 +357,7 @@ def main() -> None:
 		logger.info("Starting serial-driven actuator test routine")
 
 	try:
+		last_info_log_time = 0.0
 		while True:
 			line = serial_comm.data_reading()
 			if not line:
@@ -322,13 +376,19 @@ def main() -> None:
 			outputs = controller.compute(controlled_data)
 			driver.apply_outputs(outputs)
 			logged_outputs = dict(outputs)
+			fan_pwm = int(logged_outputs.pop("fan_pwm", 0))
+			logged_outputs["intake_pwm"] = fan_pwm
+			logged_outputs["exhaust_pwm"] = driver._exhaust_from_intake_pwm(fan_pwm)
 			led_pwm = int(logged_outputs.pop("led_pwm", 0))
 			logged_outputs["led"] = round(led_pwm / 255.0, 3)
-			logger.info(
-				"Applied outputs from serial data: sensors=%s outputs=%s",
-				controlled_data,
-				logged_outputs,
-			)
+			now_monotonic = time.monotonic()
+			if now_monotonic - last_info_log_time >= log_interval:
+				logger.info(
+					"Applied outputs from serial data: sensors=%s outputs=%s",
+					controlled_data,
+					logged_outputs,
+				)
+				last_info_log_time = now_monotonic
 	except KeyboardInterrupt:
 		if not quiet:
 			logger.info("Stopping actuator serial test loop...")
