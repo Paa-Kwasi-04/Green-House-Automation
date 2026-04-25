@@ -402,7 +402,11 @@ class ControlOutputLogger:
         try:
             file_exists = os.path.exists(self.file_path)
             self.file_handle = open(self.file_path, 'a', newline='')
-            self.writer = csv.DictWriter(self.file_handle, fieldnames=self.COLUMNS)
+            self.writer = csv.DictWriter(
+                self.file_handle,
+                fieldnames=self.COLUMNS,
+                extrasaction='ignore',
+            )
             if not file_exists:
                 self.writer.writeheader()
                 logger.debug(f"Created training data file: {self.file_path}")

@@ -113,6 +113,8 @@ def main():
 	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
 	pump_check_interval = _get_env_float("GREENHOUSE_PUMP_CHECK_INTERVAL", 6 * 60 * 60)
 	pump_pulse_seconds = _get_env_float("GREENHOUSE_PUMP_PULSE_SECONDS", 5.0)
+	photo_light_pwm = _get_env_int("GREENHOUSE_PHOTO_LIGHT_PWM", 220)
+	photo_light_warmup_seconds = _get_env_float("GREENHOUSE_PHOTO_LIGHT_WARMUP_SECONDS", 0.8)
 	http_enabled = os.getenv("GREENHOUSE_HTTP_ENABLED", "1").lower() not in {"0", "false", "no"}
 	http_host = os.getenv("GREENHOUSE_HTTP_HOST", "0.0.0.0")
 	http_port = _get_env_int("GREENHOUSE_HTTP_PORT", 8000)
@@ -264,6 +266,10 @@ def main():
 
 			today_capture_time = now.replace(hour=capture_hour, minute=capture_minute, second=0, microsecond=0)
 			if last_capture_day != now.date() and now >= today_capture_time:
+				try:
+					if photo_light_pwm > 0:
+						actuators.set_led_pwm(photo_light_pwm)
+						time.sleep(max(0.0, photo_light_warmup_seconds))
 					image_path = camera.capture()
 					logger.info(f"Growth image captured: {image_path}")
 					image_name = os.path.basename(image_path)
@@ -297,6 +303,9 @@ def main():
 						except Exception as exc:
 							logger.error("Failed to copy captured image to served directory: %s", exc)
 					last_capture_day = now.date()
+				finally:
+					if photo_light_pwm > 0:
+						actuators.set_led_pwm(0)
 
 			# Read, parse, publish, compute control
 			if serial_comm.is_connected():
@@ -322,14 +331,6 @@ def main():
 
 			# Build effective actuator command every loop from latest control output.
 			outputs = dict(raw_outputs_latest)
-
-			# Humidifier is humidity-gated in the runtime loop.
-			# Only allow controller PWM when humidity is below 50%.
-			current_humidity = last_controlled.get("humidity")
-			if current_humidity is None or current_humidity >= 50.0:
-				outputs["humidifier_pwm"] = 0
-			else:  # output high that 255
-				outputs["humidifier_pwm"] = 255  
 
 
 			# Pump is time-gated. Pulse timing is enforced even if serial input stalls.

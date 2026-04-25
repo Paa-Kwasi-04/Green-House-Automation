@@ -53,10 +53,12 @@ class ActuatorDriver:
 			PWM base frequency in Hz used for all channels.
 		"""
 		self.pwm_frequency = pwm_frequency
-		self.exhaust_ratio = self._get_env_float("GREENHOUSE_EXHAUST_RATIO", 0.15)
-		self.exhaust_min_pwm = self._get_env_int("GREENHOUSE_EXHAUST_MIN_PWM", 95)
+		self.intake_scale = self._get_env_float("GREENHOUSE_INTAKE_SCALE", 1.0)
+		self.exhaust_ratio = self._get_env_float("GREENHOUSE_EXHAUST_RATIO", 1.25)
+		self.exhaust_min_pwm = self._get_env_int("GREENHOUSE_EXHAUST_MIN_PWM", 80)
 		self.exhaust_start_boost_pwm = self._get_env_int("GREENHOUSE_EXHAUST_START_BOOST_PWM", 20)
 		self.exhaust_max_pwm = self._get_env_int("GREENHOUSE_EXHAUST_MAX_PWM", 255)
+		self.led_fuzzy_enabled = os.getenv("GREENHOUSE_LED_FUZZY_ENABLED", "0").lower() in {"1", "true", "yes"}
 		self._pwm_channels: Dict[str, PWMOutputDevice] = {}
 		self._led_driver: NeoPixelDriver | None = None
 		self._is_initialized = False
@@ -236,17 +238,17 @@ class ActuatorDriver:
 		----------
 		intake_pwm : int
 			Intake fan PWM value in range 0-255.
-
 		Notes
 		-----
 		Both intake fans (``fan_1`` and ``fan_2``) receive ``intake_pwm``.
 		Exhaust fan (``fan_3``) PWM is derived using the configurable model:
-		- ``GREENHOUSE_EXHAUST_RATIO`` (default: 1.15)
+		- ``GREENHOUSE_EXHAUST_RATIO`` (default: 1.25)
 		- ``GREENHOUSE_EXHAUST_START_BOOST_PWM`` (default: 20)
-		- ``GREENHOUSE_EXHAUST_MIN_PWM`` (default: 95)
+		- ``GREENHOUSE_EXHAUST_MIN_PWM`` (default: 80)
 		- ``GREENHOUSE_EXHAUST_MAX_PWM`` (default: 255)
 		"""
-		intake = int(self._clamp(float(intake_pwm), 0.0, 255.0))
+		raw_intake = int(self._clamp(float(intake_pwm), 0.0, 255.0))
+		intake = int(self._clamp(raw_intake * self.intake_scale, 0.0, 255.0))
 		exhaust = self._exhaust_from_intake_pwm(intake)
 		self.set_pwm_255("fan_1", intake)
 		self.set_pwm_255("fan_2", intake)
@@ -285,7 +287,10 @@ class ActuatorDriver:
 		"""
 		self.set_humidifier_pwm(int(outputs.get("humidifier_pwm", 0)))
 		self.set_fan_pwm(int(outputs.get("fan_pwm", 0)))
-		self.set_led_pwm(int(outputs.get("led_pwm", 0)))
+		if self.led_fuzzy_enabled:
+			self.set_led_pwm(int(outputs.get("led_pwm", 0)))
+		else:
+			self.set_led_pwm(0)
 		self.set_pump_pwm(int(outputs.get("pump_pwm", 0)))
 
 	def all_off(self) -> None:
