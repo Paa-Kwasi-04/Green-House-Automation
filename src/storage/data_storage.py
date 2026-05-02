@@ -8,10 +8,17 @@ outputs to CSV files for later use in machine learning model training.
 import csv
 import os
 import logging
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _week_key(dt: datetime) -> str:
+    """Return a stable ISO week key in YYYY-WW format."""
+    iso_year, iso_week, _ = dt.isocalendar()
+    return f"{iso_year}-{iso_week:02d}"
 
 
 class DataLogger:
@@ -68,14 +75,22 @@ class DataLogger:
         'pump_pwm'
     ]
     
-    def __init__(self, data_dir: str = "data", prefix: str = "greenhouse"):
+    def __init__(
+        self,
+        data_dir: str = "data",
+        prefix: str = "greenhouse",
+        weekly_dir: Optional[str] = None,
+    ):
         """Initialize data logger with file paths."""
         self.data_dir = data_dir
         self.prefix = prefix
+        self.weekly_dir = weekly_dir or os.path.join(os.path.dirname(self.data_dir), "weekly")
         
         # Create data directory if it doesn't exist
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
+        if not os.path.exists(self.weekly_dir):
+            os.makedirs(self.weekly_dir)
         
         # Use fixed filenames (append mode, no timestamps)
         self.controlled_file = os.path.join(
@@ -92,9 +107,70 @@ class DataLogger:
         self.control_handle = None
         self.controlled_writer = None
         self.control_writer = None
+
+        # Track week for automatic rollover.
+        self.current_week_key = self._detect_initial_week_key()
         
         # Initialize files with headers
         self._initialize_files()
+
+    def _detect_initial_week_key(self) -> str:
+        """Infer current week from existing live files; fallback to now."""
+        for path in (self.controlled_file, self.control_file):
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                file_dt = datetime.fromtimestamp(os.path.getmtime(path))
+                return _week_key(file_dt)
+        return _week_key(datetime.now())
+
+    def _reset_csv_file(self, file_path: str, headers: List[str]):
+        """Truncate a CSV and keep only header row for fresh live logging."""
+        with open(file_path, 'w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=headers)
+            writer.writeheader()
+
+    def rotate_weekly_if_needed(self, now: Optional[datetime] = None) -> bool:
+        """Archive last week's live files and continue writing new live data."""
+        now = now or datetime.now()
+        next_week_key = _week_key(now)
+
+        if next_week_key == self.current_week_key:
+            return False
+
+        archive_dir = os.path.join(self.weekly_dir, self.current_week_key)
+        os.makedirs(archive_dir, exist_ok=True)
+
+        try:
+            if self.controlled_handle:
+                self.controlled_handle.flush()
+                self.controlled_handle.close()
+                self.controlled_handle = None
+            if self.control_handle:
+                self.control_handle.flush()
+                self.control_handle.close()
+                self.control_handle = None
+
+            if os.path.exists(self.controlled_file):
+                shutil.copy2(
+                    self.controlled_file,
+                    os.path.join(archive_dir, os.path.basename(self.controlled_file)),
+                )
+            if os.path.exists(self.control_file):
+                shutil.copy2(
+                    self.control_file,
+                    os.path.join(archive_dir, os.path.basename(self.control_file)),
+                )
+
+            self._reset_csv_file(self.controlled_file, self.SENSOR_COLUMNS)
+            self._reset_csv_file(self.control_file, self.SENSOR_COLUMNS)
+
+            self.current_week_key = next_week_key
+            self._initialize_files()
+            logger.info("Rolled over live sensor CSVs to weekly archive: %s", archive_dir)
+            return True
+        except Exception as e:
+            logger.error(f"Failed weekly rollover for sensor CSVs: {e}")
+            self._initialize_files()
+            return False
     
     def _initialize_files(self):
         """Initialize CSV files with headers (append if exists)."""
@@ -241,14 +317,22 @@ class ControlOutputLogger:
         'pump_pwm'
     ]
     
-    def __init__(self, data_dir: str = "data", prefix: str = "training_data"):
+    def __init__(
+        self,
+        data_dir: str = "data",
+        prefix: str = "training_data",
+        weekly_dir: Optional[str] = None,
+    ):
         """Initialize control output logger."""
         self.data_dir = data_dir
         self.prefix = prefix
+        self.weekly_dir = weekly_dir or os.path.join(os.path.dirname(self.data_dir), "weekly")
         
         # Create data directory if it doesn't exist
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
+        if not os.path.exists(self.weekly_dir):
+            os.makedirs(self.weekly_dir)
         
         # Use fixed filename (append mode, no timestamps)
         self.file_path = os.path.join(
@@ -259,16 +343,70 @@ class ControlOutputLogger:
         # File handle and writer
         self.file_handle = None
         self.writer = None
+
+        # Track week for automatic rollover.
+        self.current_week_key = self._detect_initial_week_key()
         
         # Initialize file
         self._initialize_file()
+
+    def _detect_initial_week_key(self) -> str:
+        """Infer current week from existing training file; fallback to now."""
+        if os.path.exists(self.file_path) and os.path.getsize(self.file_path) > 0:
+            file_dt = datetime.fromtimestamp(os.path.getmtime(self.file_path))
+            return _week_key(file_dt)
+        return _week_key(datetime.now())
+
+    def _reset_csv_file(self, file_path: str, headers: List[str]):
+        """Truncate a CSV and keep only header row for fresh live logging."""
+        with open(file_path, 'w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=headers)
+            writer.writeheader()
+
+    def rotate_weekly_if_needed(self, now: Optional[datetime] = None) -> bool:
+        """Archive last week's training CSV and continue writing to fresh live file."""
+        now = now or datetime.now()
+        next_week_key = _week_key(now)
+
+        if next_week_key == self.current_week_key:
+            return False
+
+        archive_dir = os.path.join(self.weekly_dir, self.current_week_key)
+        os.makedirs(archive_dir, exist_ok=True)
+
+        try:
+            if self.file_handle:
+                self.file_handle.flush()
+                self.file_handle.close()
+                self.file_handle = None
+
+            if os.path.exists(self.file_path):
+                shutil.copy2(
+                    self.file_path,
+                    os.path.join(archive_dir, os.path.basename(self.file_path)),
+                )
+
+            self._reset_csv_file(self.file_path, self.COLUMNS)
+
+            self.current_week_key = next_week_key
+            self._initialize_file()
+            logger.info("Rolled over live training CSV to weekly archive: %s", archive_dir)
+            return True
+        except Exception as e:
+            logger.error(f"Failed weekly rollover for training CSV: {e}")
+            self._initialize_file()
+            return False
     
     def _initialize_file(self):
         """Initialize CSV file with headers (append if exists)."""
         try:
             file_exists = os.path.exists(self.file_path)
             self.file_handle = open(self.file_path, 'a', newline='')
-            self.writer = csv.DictWriter(self.file_handle, fieldnames=self.COLUMNS)
+            self.writer = csv.DictWriter(
+                self.file_handle,
+                fieldnames=self.COLUMNS,
+                extrasaction='ignore',
+            )
             if not file_exists:
                 self.writer.writeheader()
                 logger.debug(f"Created training data file: {self.file_path}")

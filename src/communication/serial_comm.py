@@ -10,7 +10,6 @@ import time
 import logging
 import os
 from datetime import datetime
-from serial.tools import list_ports
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +31,6 @@ class SerialComm:
         Read timeout in seconds (default is 1).
     reconnect_interval : float, optional
         Time in seconds between reconnection attempts (default is 0.5).
-    max_retries : int or None, optional
-        Maximum number of reconnection attempts. None for unlimited (default is None).
     
     Attributes
     ----------
@@ -45,8 +42,6 @@ class SerialComm:
         Read timeout in seconds.
     reconnect_interval : float
         Time between reconnection attempts.
-    max_retries : int or None
-        Maximum reconnection attempts.
     ser : serial.Serial or None
         The serial connection object.
     last_reconnect_attempt : float
@@ -59,70 +54,59 @@ class SerialComm:
         baudrate=9600,
         timeout=1,
         reconnect_interval=0.5,
-        max_retries=None,
-        preferred_ports=None,
-        allow_onboard_uart=False,
-        auto_discover_ports=False,
     ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.reconnect_interval = reconnect_interval
-        self.max_retries = max_retries
-        self.preferred_ports = preferred_ports or []
-        self.allow_onboard_uart = allow_onboard_uart
-        self.auto_discover_ports = auto_discover_ports
         self.ser = None
         self.last_reconnect_attempt = 0
         self.reconnect_logged = False  # Track if we've logged this reconnection attempt
         self.connection_error_logged = False  # Track if we've logged connection errors this session
+        self.last_parse_error_log = 0  # Throttle parse error logging to avoid spam
+        self.parse_error_throttle_interval = 10.0  # Log parse errors at most once per 10 seconds
+        self._throttle_state = {}  # key -> {last: float, count: int}
 
-    @staticmethod
-    def _normalize_port_path(port: str) -> str:
-        """Normalize serial device path for reliable comparisons."""
-        return port.rstrip("/") if isinstance(port, str) else port
+    def _log_throttled(self, level: int, key: str, interval_seconds: float, msg: str, *args) -> None:
+        """Log repeating events at most once per interval with suppressed count."""
+        now = time.time()
+        state = self._throttle_state.get(key)
+        if state is None:
+            self._throttle_state[key] = {"last": now, "count": 0}
+            logger.log(level, msg, *args)
+            return
 
-    @staticmethod
-    def _is_onboard_uart_port(port: str) -> bool:
-        """Return True for Raspberry Pi onboard UART device paths."""
-        normalized = SerialComm._normalize_port_path(port)
-        return normalized in {"/dev/serial0", "/dev/ttyAMA0"}
+        elapsed = now - state["last"]
+        if elapsed >= interval_seconds:
+            suppressed = state["count"]
+            state["last"] = now
+            state["count"] = 0
+            if suppressed > 0:
+                logger.log(level, "%s (suppressed %d similar event(s))", msg, suppressed, *args)
+            else:
+                logger.log(level, msg, *args)
+            return
+
+        state["count"] += 1
 
     def _candidate_ports(self):
-        """Build an ordered list of serial ports to try."""
+        """Build an ordered list of serial ports to try.
+
+        To keep runtime behavior predictable, only USB serial device paths
+        are considered: /dev/ttyUSB0 and /dev/ttyACM0.
+        """
+        allowed_ports = ["/dev/ttyUSB0", "/dev/ttyACM0"]
         candidates = []
 
-        for port in [self.port] + self.preferred_ports:
-            if port and port not in candidates:
-                candidates.append(port)
+        # Keep explicit config first when it matches supported USB serial paths.
+        if self.port in allowed_ports:
+            candidates.append(self.port)
 
-        # Prefer USB serial adapters. Onboard UART is opt-in to avoid false positives.
-        linux_fallbacks = ["/dev/ttyUSB0", "/dev/ttyACM0"]
-        if self.allow_onboard_uart:
-            linux_fallbacks.extend(["/dev/serial0", "/dev/ttyAMA0"])
-
-        for port in linux_fallbacks:
+        for port in allowed_ports:
             if port not in candidates and os.path.exists(port):
                 candidates.append(port)
 
-        if self.auto_discover_ports:
-            for port in [p.device for p in list_ports.comports()]:
-                if port not in candidates:
-                    candidates.append(port)
-
-        if self.allow_onboard_uart:
-            return candidates
-
-        # Keep explicit user-selected port, otherwise filter out onboard UART paths.
-        filtered = []
-        for port in candidates:
-            if port == self.port:
-                filtered.append(port)
-                continue
-            if not self._is_onboard_uart_port(port):
-                filtered.append(port)
-
-        return filtered
+        return candidates
 
     def is_connected(self):
         """
@@ -266,7 +250,13 @@ class SerialComm:
                 return line
             return None
         except Exception as e:
-            logger.error(f"Serial read failed: {e}")
+            self._log_throttled(
+                logging.ERROR,
+                "serial_read_failed",
+                10.0,
+                "Serial read failed: %s",
+                e,
+            )
             self.ser = None
             return None
         
@@ -308,29 +298,45 @@ class SerialComm:
             sections = line.split(';')
             
             if len(sections) != 2:
-                logger.warning(f"Invalid data format - expected 2 sections, got {len(sections)}")
+                # Throttle parse error logging to reduce spam
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning(f"Invalid data format - expected 2 sections, got {len(sections)}")
+                    self.last_parse_error_log = current_time
                 return None
             
             # Parse Controlled section
             controlled_section = sections[0]
             if not controlled_section.startswith("Controlled|"):
-                logger.warning("Missing 'Controlled|' prefix")
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning("Missing 'Controlled|' prefix")
+                    self.last_parse_error_log = current_time
                 return None
             
             controlled_values = controlled_section.replace("Controlled|", "").split(',')
             if len(controlled_values) != 5:
-                logger.warning(f"Invalid controlled data - expected 5 values, got {len(controlled_values)}")
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning(f"Invalid controlled data - expected 5 values, got {len(controlled_values)}")
+                    self.last_parse_error_log = current_time
                 return None
             
             # Parse Control section
             control_section = sections[1]
             if not control_section.startswith("Control|"):
-                logger.warning("Missing 'Control|' prefix")
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning("Missing 'Control|' prefix")
+                    self.last_parse_error_log = current_time
                 return None
             
             control_values = control_section.replace("Control|", "").split(',')
             if len(control_values) != 5:
-                logger.warning(f"Invalid control data - expected 5 values, got {len(control_values)}")
+                current_time = time.time()
+                if current_time - self.last_parse_error_log >= self.parse_error_throttle_interval:
+                    logger.warning(f"Invalid control data - expected 5 values, got {len(control_values)}")
+                    self.last_parse_error_log = current_time
                 return None
             
             # Create data dictionary
@@ -354,7 +360,13 @@ class SerialComm:
 
             return data
         except Exception as e:
-            logger.error(f"Data parsing failed: {e}")
+            self._log_throttled(
+                logging.ERROR,
+                "parse_failed",
+                10.0,
+                "Data parsing failed: %s",
+                e,
+            )
             return None
 
     def close(self):
@@ -385,22 +397,14 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyACM0")
+    serial_port = os.getenv("GREENHOUSE_SERIAL_PORT", "/dev/ttyUSB0")
     baudrate = int(os.getenv("GREENHOUSE_SERIAL_BAUDRATE", "115200"))
-    allow_onboard_uart = os.getenv("GREENHOUSE_ALLOW_ONBOARD_UART", "false").strip().lower() in {"1", "true", "yes", "on"}
-    fallback_ports = os.getenv("GREENHOUSE_SERIAL_FALLBACKS", "/dev/ttyACM0")
-    auto_discover_ports = os.getenv("GREENHOUSE_SERIAL_AUTO_DISCOVER", "false").strip().lower() in {"1", "true", "yes", "on"}
-    preferred_ports = [p.strip() for p in fallback_ports.split(",") if p.strip()]
 
     serial_comm = SerialComm(
         port=serial_port,
         baudrate=baudrate,
         timeout=1,
-        reconnect_interval=2.0,
-        max_retries=None,
-        preferred_ports=preferred_ports,
-        allow_onboard_uart=allow_onboard_uart,
-        auto_discover_ports=auto_discover_ports,
+        reconnect_interval=0.5,
     )
     serial_comm.connect()
     try:

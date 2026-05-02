@@ -1,8 +1,7 @@
-paho-mqtt
-pyserial
-scikit-fuzzy
-numpy
-networkx
-logging
-datetime
-time
+adafruit-blinka==9.0.4
+adafruit-circuitpython-neopixel==6.4.1
+gpiozero==2.0.1
+numpy==2.4.3
+picamera2==0.3.34
+pyserial==3.5
+scikit-fuzzy==0.5.0

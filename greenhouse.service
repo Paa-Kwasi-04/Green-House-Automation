@@ -1,0 +1,19 @@
+[Unit]
+Description=Greenhouse Automation System
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi/greenhouse_project/Green-House-Automation/src
+Environment="PATH=/home/pi/greenhouse_project/Green-House-Automation/src/.venv/bin"
+Environment="GREENHOUSE_TAILSCALE_FUNNEL_URL=https://greenhouse-pi.taildaad3b.ts.net"
+ExecStart=/home/pi/greenhouse_project/Green-House-Automation/src/.venv/bin/python /home/pi/greenhouse_project/Green-House-Automation/src/main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=greenhouse
+
+[Install]
+WantedBy=multi-user.target
