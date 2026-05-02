@@ -69,9 +69,11 @@ class FuzzyController:
         """Initialize setpoints and build fuzzy control systems."""
 
         # Setpoints (configurable via env vars, with stable defaults)
-        self.T_set = self._get_env_float("GREENHOUSE_SETPOINT_TEMPERATURE", 25.0)
-        self.H_set = self._get_env_float("GREENHOUSE_SETPOINT_HUMIDITY", 85.0)
-        self.L_set = self._get_env_float("GREENHOUSE_SETPOINT_LIGHT", 150.0)
+        # Defaults are tuned to the observed greenhouse operating range in the
+        # saved training data. They can still be overridden via environment variables.
+        self.T_set = self._get_env_float("GREENHOUSE_SETPOINT_TEMPERATURE", 25.5)
+        self.H_set = self._get_env_float("GREENHOUSE_SETPOINT_HUMIDITY", 79.0)
+        self.L_set = self._get_env_float("GREENHOUSE_SETPOINT_LIGHT", 110.0)
         self.M_set = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE", 65.0)
         self.M_deadband = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE_DEADBAND", 5.0)
         self.output_slew_step = max(1, int(self._get_env_float("GREENHOUSE_OUTPUT_SLEW_STEP_PWM", 30.0)))
@@ -303,7 +305,12 @@ class FuzzyController:
                 self.pump_sim.compute()
                 pump_output = self.pump_sim.output['pump']
         except Exception as exc:
-            logger.error("Fuzzy compute failed; reusing last outputs: %s", exc)
+            logger.error(
+                "Fuzzy compute failed with inputs: T=%.2f, H=%.2f, L=%.2f, M=%.2f, "
+                "errors: eT=%.2f, eH=%.2f, eL=%.2f, eM=%.2f; reusing last outputs",
+                T, H, L, M, eT, eH, eL, eM,
+                exc_info=True
+            )
             return dict(self._last_outputs)
         
         # Convert to PWM
