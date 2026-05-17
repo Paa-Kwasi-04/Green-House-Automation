@@ -74,7 +74,7 @@ class FuzzyController:
         self.T_set = self._get_env_float("GREENHOUSE_SETPOINT_TEMPERATURE", 25.5)
         self.H_set = self._get_env_float("GREENHOUSE_SETPOINT_HUMIDITY", 79.0)
         self.L_set = self._get_env_float("GREENHOUSE_SETPOINT_LIGHT", 110.0)
-        self.M_set = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE", 65.0)
+        self.M_set = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE", 85.0)
         self.M_deadband = self._get_env_float("GREENHOUSE_SETPOINT_MOISTURE_DEADBAND", 5.0)
         self.output_slew_step = max(1, int(self._get_env_float("GREENHOUSE_OUTPUT_SLEW_STEP_PWM", 30.0)))
         self.input_smoothing_alpha = self._get_env_float("GREENHOUSE_INPUT_SMOOTHING_ALPHA", 0.35)
@@ -221,13 +221,15 @@ class FuzzyController:
 
     def _build_pump(self):
         """Build pump fuzzy control system."""
-        moisture_error = ctrl.Antecedent(np.arange(-35, 36, 1), 'moisture_error')
+        # Keep a small margin beyond clipped runtime bounds so edge values still
+        # have non-zero membership and produce a consequent.
+        moisture_error = ctrl.Antecedent(np.arange(-36, 37, 1), 'moisture_error')
         pump = ctrl.Consequent(np.arange(0, 101, 1), 'pump')
 
         # Membership Functions
-        moisture_error['Wet'] = fuzz.trimf(moisture_error.universe, [-35, -35, -8])
+        moisture_error['Wet'] = fuzz.trimf(moisture_error.universe, [-36, -35, -8])
         moisture_error['OK'] = fuzz.trimf(moisture_error.universe, [-10, 0, 10])
-        moisture_error['Dry'] = fuzz.trimf(moisture_error.universe, [6, 20, 35])
+        moisture_error['Dry'] = fuzz.trimf(moisture_error.universe, [6, 20, 36])
 
         pump['OFF'] = fuzz.trimf(pump.universe, [0, 0, 20])
         pump['LOW'] = fuzz.trimf(pump.universe, [15, 35, 55])
@@ -303,7 +305,13 @@ class FuzzyController:
             else:
                 self.pump_sim.input['moisture_error'] = eM
                 self.pump_sim.compute()
-                pump_output = self.pump_sim.output['pump']
+                pump_output = self.pump_sim.output.get('pump', 0.0)
+                if 'pump' not in self.pump_sim.output:
+                    logger.warning(
+                        "Pump fuzzy output missing for moisture %.2f (error %.2f); defaulting to 0",
+                        M,
+                        eM,
+                    )
         except Exception as exc:
             logger.error(
                 "Fuzzy compute failed with inputs: T=%.2f, H=%.2f, L=%.2f, M=%.2f, "

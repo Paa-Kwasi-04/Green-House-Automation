@@ -59,6 +59,8 @@ class ActuatorDriver:
 		self.exhaust_start_boost_pwm = self._get_env_int("GREENHOUSE_EXHAUST_START_BOOST_PWM", 20)
 		self.exhaust_max_pwm = self._get_env_int("GREENHOUSE_EXHAUST_MAX_PWM", 255)
 		self.led_fuzzy_enabled = os.getenv("GREENHOUSE_LED_FUZZY_ENABLED", "0").lower() in {"1", "true", "yes"}
+		# LED brightness scaler (0.0 - 1.0). Change this to reduce brightness: 0.5, 0.3, etc.
+		self.led_brightness = self._get_env_float("GREENHOUSE_NEOPIXEL_BRIGHTNESS", 0.1)
 		self._pwm_channels: Dict[str, PWMOutputDevice] = {}
 		self._led_driver: NeoPixelDriver | None = None
 		self._is_initialized = False
@@ -91,10 +93,9 @@ class ActuatorDriver:
 	def _initialize_gpio(self) -> None:
 		"""Create gpiozero PWM devices for every mapped actuator pin."""
 		led_count = 120
-		led_brightness = float(os.getenv("GREENHOUSE_NEOPIXEL_BRIGHTNESS", "1.0"))
 		self._led_driver = NeoPixelDriver(
 			pixel_count=led_count,
-			brightness=led_brightness,
+			brightness=self.led_brightness,
 			log_transmissions=False,
 		)
 
@@ -261,6 +262,20 @@ class ActuatorDriver:
 		level = int(self._clamp(float(pwm_value), 0.0, 255.0))
 		self._led_driver.set_white_pwm(level)
 
+	def set_led_brightness(self, brightness: float) -> None:
+		"""Set global LED brightness scaler.
+
+		Parameters
+		----------
+		brightness : float
+			Brightness scaler in range 0.0-1.0. Values are clamped to this range.
+			0.0 = off, 1.0 = full brightness.
+		"""
+		self.led_brightness = self._clamp(float(brightness), 0.0, 1.0)
+		if self._led_driver is not None:
+			self._led_driver.brightness = self.led_brightness
+			logger.info("LED brightness set to %.2f", self.led_brightness)
+
 	def set_pump_pwm(self, pwm_value: int) -> None:
 		"""Set pump PWM (0-255)."""
 		self.set_pwm_255("pump", pwm_value)
@@ -287,10 +302,10 @@ class ActuatorDriver:
 		"""
 		self.set_humidifier_pwm(int(outputs.get("humidifier_pwm", 0)))
 		self.set_fan_pwm(int(outputs.get("fan_pwm", 0)))
-		if self.led_fuzzy_enabled:
-			self.set_led_pwm(int(outputs.get("led_pwm", 0)))
-		else:
-			self.set_led_pwm(0)
+		# Always apply the computed/scheduled LED PWM so external schedules
+		# (e.g. main.py light schedule) are honored regardless of the
+		# `GREENHOUSE_LED_FUZZY_ENABLED` environment flag.
+		self.set_led_pwm(int(outputs.get("led_pwm", 0)))
 		self.set_pump_pwm(int(outputs.get("pump_pwm", 0)))
 
 	def all_off(self) -> None:

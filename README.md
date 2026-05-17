@@ -9,12 +9,12 @@ An IoT-based smart mushroom greenhouse automation system using a hybrid Arduino-
 - **Raspberry Pi**: Fuzzy logic control, automation, HTTP telemetry publishing, data logging, and camera streaming
 - **Control Method**: Mamdani fuzzy logic controllers (scikit-fuzzy)
 - **Actuators** (BCM pin numbering):
-  - Fan 1 – Intake → GPIO 22 (PWM via gpiozero)
-  - Fan 2 – Intake → GPIO 24 (PWM via gpiozero)
-  - Fan 3 – Exhaust → GPIO 17 (PWM via gpiozero, derived from intake PWM)
-  - Peristaltic Pump → GPIO 4 (PWM via gpiozero)
-  - LED Grow Lights → GPIO 18 (NeoPixel strip via adafruit-circuitpython-neopixel)
-  - Humidifier → GPIO 10 (PWM via gpiozero)
+  - Fan 1 – Intake → GPIO 22 (PWM 0-100% via gpiozero)
+  - Fan 2 – Intake → GPIO 24 (PWM 0-100% via gpiozero)
+  - Fan 3 – Exhaust → GPIO 17 (PWM 0-100% via gpiozero; derived from intake using model: 1.25× ratio + 20 PWM boost, clamped 80-255)
+  - Peristaltic Pump → GPIO 4 (PWM 0-100% via gpiozero, time-gated pulse mode)
+  - LED Grow Lights → GPIO 18 (NeoPixel strip: 120 LEDs, white output, via adafruit-circuitpython-neopixel)
+  - Humidifier → GPIO 10 (PWM 0-100% via gpiozero)
 
 ### Monitored Parameters
 - **Temperature** (°C)
@@ -33,12 +33,12 @@ This design enables data-driven comparison of automated vs. natural growing cond
 ## Features
 
 ### 1. Real-Time Fuzzy Logic Control
-- **Temperature Controller**: Fan speed adjustment (intake fans + exhaust fan derived from intake)
+- **Temperature & Humidity Controller**: Fan speed adjustment (intake fans + exhaust fan derived from intake)
 - **Temperature & Humidity Controller**: Humidifier output regulation
-- **Light Controller**: NeoPixel LED brightness adjustment
+- **Light Controller**: NeoPixel LED brightness adjustment (optionally overridden by light schedule)
 - **Substrate Moisture Controller**: Pump activation control (time-gated pulse mode)
-- Setpoints: T=25°C, H=85%, Light=150 lux, Moisture=65%
-- CO₂ is monitored and logged but not used as a fuzzy controller input in the current Python implementation
+- Default Setpoints: T=25.5°C, H=79%, Light=110 lux, Moisture=85%
+- CO₂ is monitored and logged but not used as a fuzzy controller input
 
 ### 2. Communication Systems
 - **Serial Communication**: Arduino → Raspberry Pi (115200 baud)
@@ -53,7 +53,8 @@ This design enables data-driven comparison of automated vs. natural growing cond
 ### 3. Camera & Visual Monitoring
 - **Raspberry Pi Camera**: Daily still capture and live MJPEG stream using `picamera2`
   - Captures one high-resolution image per day at the configured time (default 21:00)
-  - Images saved under `<GREENHOUSE_IMAGE_DIR>/` and served via the built-in HTTP server
+  - LED pre-lighting applied before capture (default 0.8s warmup at 220 PWM)
+  - Images saved under `<GREENHOUSE_IMAGE_DIR>/` and served via the built-in HTTP server; POSTs to configured URL with fallback to local storage
   - Live MJPEG stream accessible at `http://<host>:<port>/stream` (default 6 fps, 640×480)
 
 ### 4. HTTP Server
@@ -83,14 +84,22 @@ This design enables data-driven comparison of automated vs. natural growing cond
 
 ### 6. Pump Pulse Mode
 - The pump is time-gated: it runs for a short configurable pulse rather than continuously
-- A pulse is triggered at most once per configurable check interval when moisture is below the deadband
+- A pulse is triggered at most once per configurable check interval (default 6 hours) when moisture is below the deadband
+- Each pulse duration is independently configurable (default 5 seconds)
 - Configurable via `GREENHOUSE_PUMP_CHECK_INTERVAL` and `GREENHOUSE_PUMP_PULSE_SECONDS`
 
-### 7. Robust Error Handling
+### 7. Light Schedule (Optional Override)
+- LED brightness can be controlled by a daily light schedule (independent of fuzzy control)
+- Schedule-based control enabled by default; can be disabled to use fuzzy LED controller
+- Configurable start hour, duration, and PWM level
+- Useful for diurnal cycle simulation independent of thermal control
+
+### 8. Robust Error Handling
 - Automatic serial port reconnection
 - HTTP telemetry post error throttling and recovery logging
 - Comprehensive logging for debugging
 - Input validation and error recovery
+- Graceful shutdown handlers for SIGTERM and SIGINT signals
 
 ## Repository Structure
 
@@ -175,6 +184,7 @@ All runtime parameters are controlled via environment variables. The system fall
 | `GREENHOUSE_TELEMETRY_VIEW_URL` | `<public_base_url>/telemetry/view` | URL of the live telemetry dashboard |
 | `GREENHOUSE_CAPTURE_HOUR` | `21` | Hour (0–23) for daily still capture |
 | `GREENHOUSE_CAPTURE_MINUTE` | `0` | Minute (0–59) for daily still capture |
+| `GREENHOUSE_PHOTO_LIGHT_PWM` | `220` | PWM level for LED pre-lighting before photo capture |
 | `GREENHOUSE_POST_IMAGE_URL` | `http://127.0.0.1:8000/upload` | URL to POST captured images to |
 | `GREENHOUSE_POST_TIMEOUT` | `5.0` | Timeout in seconds for image POST requests |
 | `GREENHOUSE_IMAGE_BASE_URL` | `<public_base_url>/images` | Base URL for serving stored images |
@@ -193,11 +203,18 @@ All runtime parameters are controlled via environment variables. The system fall
 | `GREENHOUSE_NEOPIXEL_BRIGHTNESS` | `1.0` | Global NeoPixel brightness scaler (0.0–1.0) |
 | `GREENHOUSE_NEOPIXEL_COUNT` | `120` | Number of LEDs on the NeoPixel strip |
 | `GREENHOUSE_NEOPIXEL_LOG_TX` | `1` | Log NeoPixel transmissions (`1` = enabled) |
-| `GREENHOUSE_SETPOINT_TEMPERATURE` | `25.0` | Fuzzy controller temperature setpoint (°C) |
-| `GREENHOUSE_SETPOINT_HUMIDITY` | `85.0` | Fuzzy controller humidity setpoint (%) |
-| `GREENHOUSE_SETPOINT_LIGHT` | `150.0` | Fuzzy controller light intensity setpoint (lux) |
-| `GREENHOUSE_SETPOINT_MOISTURE` | `65.0` | Fuzzy controller substrate moisture setpoint (%) |
+| `GREENHOUSE_LED_FUZZY_ENABLED` | `0` | Enable fuzzy LED control (`1` = on); light schedule takes precedence when enabled |
+| `GREENHOUSE_LIGHT_SCHEDULE_ENABLED` | `1` | Enable light schedule override (`1` = on, default behavior) |
+| `GREENHOUSE_LIGHT_SCHEDULE_START_HOUR` | `6` | Hour (0–23) to start daily light schedule |
+| `GREENHOUSE_LIGHT_SCHEDULE_ON_HOURS` | `12` | Duration in hours for light schedule (e.g., 12 = 6AM-6PM) |
+| `GREENHOUSE_LIGHT_SCHEDULE_PWM` | `220` | PWM level for light schedule when active |
+| `GREENHOUSE_SETPOINT_TEMPERATURE` | `25.5` | Fuzzy controller temperature setpoint (°C) |
+| `GREENHOUSE_SETPOINT_HUMIDITY` | `79.0` | Fuzzy controller humidity setpoint (%) |
+| `GREENHOUSE_SETPOINT_LIGHT` | `110.0` | Fuzzy controller light intensity setpoint (lux) |
+| `GREENHOUSE_SETPOINT_MOISTURE` | `85.0` | Fuzzy controller substrate moisture setpoint (%) |
 | `GREENHOUSE_SETPOINT_MOISTURE_DEADBAND` | `5.0` | Moisture deadband; pump skipped when moisture ≥ (setpoint − deadband) |
+| `GREENHOUSE_FUZZY_INPUT_SMOOTHING_ALPHA` | `0.35` | Exponential smoothing factor for fuzzy controller inputs (0.0–1.0) |
+| `GREENHOUSE_FUZZY_OUTPUT_SLEW_RATE` | `30` | Maximum PWM change per control step (limits ramp-up/down rate) |
 | `GREENHOUSE_ACTUATOR_QUIET` | `0` | Suppress info-level logging in actuator standalone test mode (`1` = quiet) |
 | `GREENHOUSE_LOOP_DELAY` | `0.1` | Main loop delay in seconds |
 

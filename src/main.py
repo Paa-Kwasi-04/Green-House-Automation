@@ -4,6 +4,7 @@ import time
 import os
 import logging
 import shutil
+import signal
 from datetime import datetime
 from urllib.parse import quote, urlparse
 from communication.serial_comm import SerialComm
@@ -23,6 +24,17 @@ from storage.logger import setup_logging
 from storage.data_storage import DataLogger, ControlOutputLogger
 
 logger = logging.getLogger(__name__)
+
+# Global flag for graceful shutdown
+_shutdown_requested = False
+
+
+def _handle_shutdown_signal(signum, frame):
+	"""Handle SIGTERM and SIGINT signals for graceful shutdown."""
+	global _shutdown_requested
+	signal_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+	logger.info(f"Received signal {signal_name}, initiating graceful shutdown...")
+	_shutdown_requested = True
 
 
 def _default_runtime_dir() -> str:
@@ -111,8 +123,12 @@ def main():
 	telemetry_publish_interval = _get_env_float("GREENHOUSE_TELEMETRY_PUBLISH_INTERVAL", 1.0)
 	telemetry_post_timeout = _get_env_float("GREENHOUSE_TELEMETRY_POST_TIMEOUT", 5.0)
 	loop_delay = _get_env_float("GREENHOUSE_LOOP_DELAY", 0.1)
-	pump_check_interval = _get_env_float("GREENHOUSE_PUMP_CHECK_INTERVAL", 6 * 60 * 60)
-	pump_pulse_seconds = _get_env_float("GREENHOUSE_PUMP_PULSE_SECONDS", 5.0)
+	pump_check_interval = _get_env_float("GREENHOUSE_PUMP_CHECK_INTERVAL", 4 * 60 * 60)
+	pump_pulse_seconds = _get_env_float("GREENHOUSE_PUMP_PULSE_SECONDS", 8.0)
+	light_schedule_enabled = os.getenv("GREENHOUSE_LIGHT_SCHEDULE_ENABLED", "1").lower() not in {"0", "false", "no"}
+	light_schedule_start_hour = _get_env_float("GREENHOUSE_LIGHT_SCHEDULE_START_HOUR", 6.0)
+	light_schedule_on_hours = _get_env_float("GREENHOUSE_LIGHT_SCHEDULE_ON_HOURS", 12.0)
+	light_schedule_pwm = _get_env_int("GREENHOUSE_LIGHT_SCHEDULE_PWM", 220)
 	photo_light_pwm = _get_env_int("GREENHOUSE_PHOTO_LIGHT_PWM", 220)
 	photo_light_warmup_seconds = _get_env_float("GREENHOUSE_PHOTO_LIGHT_WARMUP_SECONDS", 0.8)
 	http_enabled = os.getenv("GREENHOUSE_HTTP_ENABLED", "1").lower() not in {"0", "false", "no"}
@@ -230,6 +246,10 @@ def main():
 	# Connect
 	serial_comm.connect()
 
+	# Register signal handlers for graceful shutdown
+	signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+	signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
 	logger.info("Starting greenhouse control loop...")
 
 	try:
@@ -237,6 +257,7 @@ def main():
 		last_telemetry_publish_time = 0.0
 		telemetry_post_warned = False
 		telemetry_post_fail_count = 0
+		last_light_schedule_state = None
 		last_pump_check_time = 0.0
 		pump_pulse_until = 0.0
 		pump_pulse_pwm = 0
@@ -248,7 +269,8 @@ def main():
 		}
 		last_controlled = {}
 		last_control = {}
-		while True:
+		global _shutdown_requested
+		while not _shutdown_requested:
 			current_time = time.time()
 			has_fresh_control_data = False
 			fresh_controlled_data = None
@@ -331,6 +353,26 @@ def main():
 
 			# Build effective actuator command every loop from latest control output.
 			outputs = dict(raw_outputs_latest)
+
+			if light_schedule_enabled:
+				if light_schedule_on_hours <= 0:
+					light_schedule_on_hours = 12.0
+				light_schedule_start_hour = light_schedule_start_hour % 24.0
+				light_schedule_on_hours = min(light_schedule_on_hours, 24.0)
+				now_hour = now.hour + (now.minute / 60.0) + (now.second / 3600.0)
+				hours_since_start = (now_hour - light_schedule_start_hour) % 24.0
+				light_on = hours_since_start < light_schedule_on_hours
+				outputs["led_pwm"] = light_schedule_pwm if light_on else 0
+				light_state = "ON" if light_on else "OFF"
+				if light_state != last_light_schedule_state:
+					logger.info(
+						"Light schedule state changed: %s (start=%.2f on_hours=%.2f pwm=%d)",
+						light_state,
+						light_schedule_start_hour,
+						light_schedule_on_hours,
+						light_schedule_pwm,
+					)
+					last_light_schedule_state = light_state
 
 
 			# Pump is time-gated. Pulse timing is enforced even if serial input stalls.
