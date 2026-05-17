@@ -116,7 +116,8 @@ Green-House-Automation/
 │   ├── actuators/               # Actuator control modules
 │   │   ├── __init__.py          # Package export (ActuatorDriver)
 │   │   ├── actuators.py         # gpiozero PWM driver + exhaust fan model (BCM pins)
-│   │   └── Neopixel_driver.py   # NeoPixel LED driver via GPIO18
+│   │   ├── Neopixel_driver.py   # NeoPixel LED driver via GPIO18
+│   │   └── shutdown_gpio.py     # Safe shutdown helper to turn off GPIO on exit
 │   ├── communication/           # Communication modules
 │   │   ├── __init__.py
 │   │   ├── serial_comm.py       # Arduino serial communication
@@ -206,7 +207,7 @@ All runtime parameters are controlled via environment variables. The system fall
 | `GREENHOUSE_NEOPIXEL_BRIGHTNESS` | `0.1` | Global NeoPixel brightness scaler (0.0–1.0) |
 | `GREENHOUSE_NEOPIXEL_COUNT` | `120` | Number of LEDs on the NeoPixel strip |
 | `GREENHOUSE_NEOPIXEL_LOG_TX` | `1` | Log NeoPixel transmissions (`1` = enabled) |
-| `GREENHOUSE_LED_FUZZY_ENABLED` | `0` | Enable fuzzy LED control (`1` = on); light schedule takes precedence when enabled |
+| `GREENHOUSE_LED_FUZZY_ENABLED` | `0` | Read by `ActuatorDriver` but currently not enforced; LED PWM is always applied and the light schedule (when enabled) overrides fuzzy output |
 | `GREENHOUSE_LIGHT_SCHEDULE_ENABLED` | `1` | Enable light schedule override (`1` = on, default behavior) |
 | `GREENHOUSE_LIGHT_SCHEDULE_START_HOUR` | `6` | Hour (0–23) to start daily light schedule |
 | `GREENHOUSE_LIGHT_SCHEDULE_ON_HOURS` | `12` | Duration in hours for light schedule (e.g., 12 = 6AM-6PM) |
