@@ -84,8 +84,8 @@ This design enables data-driven comparison of automated vs. natural growing cond
 
 ### 6. Pump Pulse Mode
 - The pump is time-gated: it runs for a short configurable pulse rather than continuously
-- A pulse is triggered at most once per configurable check interval (default 6 hours) when moisture is below the deadband
-- Each pulse duration is independently configurable (default 5 seconds)
+- A pulse is triggered at most once per configurable check interval (default 4 hours) when moisture is below the deadband
+- Each pulse duration is independently configurable (default 8 seconds)
 - Configurable via `GREENHOUSE_PUMP_CHECK_INTERVAL` and `GREENHOUSE_PUMP_PULSE_SECONDS`
 
 ### 7. Light Schedule (Optional Override)
@@ -109,8 +109,8 @@ Green-House-Automation/
 │   ├── Humidity_Controller.mlx              # Humidifier: temp + humidity error
 │   ├── LED_controller.mlx                   # LED: light error
 │   ├── Substrate_moisture_controller.mlx    # Pump: moisture error
-│   └── Temperature_C02_Controller.mlx       # Original fan design (temp + CO₂);
-│                                            # Python implementation uses temp-only
+│   ├── Temperature_C02_Controller.mlx       # Original fan design (temp + CO₂)
+│   └── Temperature_Controller.mlx           # Alternate temperature-focused fan design
 ├── src/                         # Main application code
 │   ├── main.py                  # Main control loop entry point
 │   ├── actuators/               # Actuator control modules
@@ -131,6 +131,7 @@ Green-House-Automation/
 │       ├── logger.py            # Application logging setup
 │       └── data_storage.py      # CSV data storage with weekly rotation
 ├── requirements.txt             # Python dependencies
+├── greenhouse.service           # Example systemd service unit for Raspberry Pi deployment
 └── README.md                    # This file
 ```
 
@@ -185,22 +186,24 @@ All runtime parameters are controlled via environment variables. The system fall
 | `GREENHOUSE_CAPTURE_HOUR` | `21` | Hour (0–23) for daily still capture |
 | `GREENHOUSE_CAPTURE_MINUTE` | `0` | Minute (0–59) for daily still capture |
 | `GREENHOUSE_PHOTO_LIGHT_PWM` | `220` | PWM level for LED pre-lighting before photo capture |
+| `GREENHOUSE_PHOTO_LIGHT_WARMUP_SECONDS` | `0.8` | Seconds to keep photo pre-light on before capture |
 | `GREENHOUSE_POST_IMAGE_URL` | `http://127.0.0.1:8000/upload` | URL to POST captured images to |
 | `GREENHOUSE_POST_TIMEOUT` | `5.0` | Timeout in seconds for image POST requests |
 | `GREENHOUSE_IMAGE_BASE_URL` | `<public_base_url>/images` | Base URL for serving stored images |
 | `GREENHOUSE_STREAM_URL` | `<public_base_url>/stream` | Public URL for the MJPEG live stream |
 | `GREENHOUSE_LATEST_IMAGE_URL` | `<public_base_url>/latest` | Public URL for the latest-image endpoint |
 | `GREENHOUSE_PUBLIC_BASE_URL` | _(empty)_ | Explicit public base URL; overrides auto-detected host for all generated URLs |
-| `GREENHOUSE_TAILSCALE_FUNNEL_URL` | _(empty)_ | Tailscale Funnel URL; used as the public base URL when set |
+| `GREENHOUSE_TAILSCALE_FUNNEL_URL` | `https://greenhouse-pi.taildaad3b.ts.net` | Tailscale Funnel URL; used as the public base URL when set |
 | `GREENHOUSE_TAILSCALE_HOST` | _(empty)_ | Tailscale host; used for public base URL when Funnel URL is not set |
 | `GREENHOUSE_TAILSCALE_SCHEME` | `http` | URL scheme used with `GREENHOUSE_TAILSCALE_HOST` (`http` or `https`) |
-| `GREENHOUSE_PUMP_CHECK_INTERVAL` | `21600` | Seconds between pump activation checks (default: 6 hours) |
-| `GREENHOUSE_PUMP_PULSE_SECONDS` | `5.0` | Duration in seconds of each pump pulse |
-| `GREENHOUSE_EXHAUST_RATIO` | `0.15` | Exhaust fan PWM scale factor relative to intake |
+| `GREENHOUSE_PUMP_CHECK_INTERVAL` | `14400` | Seconds between pump activation checks (default: 4 hours) |
+| `GREENHOUSE_PUMP_PULSE_SECONDS` | `8.0` | Duration in seconds of each pump pulse |
+| `GREENHOUSE_INTAKE_SCALE` | `1.0` | Intake fan PWM scale factor before applying to both intake fans |
+| `GREENHOUSE_EXHAUST_RATIO` | `1.25` | Exhaust fan PWM scale factor relative to intake |
 | `GREENHOUSE_EXHAUST_START_BOOST_PWM` | `20` | Startup boost added to exhaust PWM to overcome static friction |
-| `GREENHOUSE_EXHAUST_MIN_PWM` | `95` | Minimum PWM applied to exhaust fan when it is spinning |
+| `GREENHOUSE_EXHAUST_MIN_PWM` | `80` | Minimum PWM applied to exhaust fan when it is spinning |
 | `GREENHOUSE_EXHAUST_MAX_PWM` | `255` | Maximum PWM cap for exhaust fan |
-| `GREENHOUSE_NEOPIXEL_BRIGHTNESS` | `1.0` | Global NeoPixel brightness scaler (0.0–1.0) |
+| `GREENHOUSE_NEOPIXEL_BRIGHTNESS` | `0.1` | Global NeoPixel brightness scaler (0.0–1.0) |
 | `GREENHOUSE_NEOPIXEL_COUNT` | `120` | Number of LEDs on the NeoPixel strip |
 | `GREENHOUSE_NEOPIXEL_LOG_TX` | `1` | Log NeoPixel transmissions (`1` = enabled) |
 | `GREENHOUSE_LED_FUZZY_ENABLED` | `0` | Enable fuzzy LED control (`1` = on); light schedule takes precedence when enabled |
@@ -213,8 +216,9 @@ All runtime parameters are controlled via environment variables. The system fall
 | `GREENHOUSE_SETPOINT_LIGHT` | `110.0` | Fuzzy controller light intensity setpoint (lux) |
 | `GREENHOUSE_SETPOINT_MOISTURE` | `85.0` | Fuzzy controller substrate moisture setpoint (%) |
 | `GREENHOUSE_SETPOINT_MOISTURE_DEADBAND` | `5.0` | Moisture deadband; pump skipped when moisture ≥ (setpoint − deadband) |
-| `GREENHOUSE_FUZZY_INPUT_SMOOTHING_ALPHA` | `0.35` | Exponential smoothing factor for fuzzy controller inputs (0.0–1.0) |
-| `GREENHOUSE_FUZZY_OUTPUT_SLEW_RATE` | `30` | Maximum PWM change per control step (limits ramp-up/down rate) |
+| `GREENHOUSE_INPUT_SMOOTHING_ALPHA` | `0.35` | Exponential smoothing factor for fuzzy controller inputs (0.0–1.0) |
+| `GREENHOUSE_OUTPUT_SLEW_STEP_PWM` | `30` | Maximum PWM change per control step (limits ramp-up/down rate) |
+| `GREENHOUSE_LIGHT_DEADBAND` | `10.0` | Light error deadband (lux) before fuzzy LED correction is applied |
 | `GREENHOUSE_ACTUATOR_QUIET` | `0` | Suppress info-level logging in actuator standalone test mode (`1` = quiet) |
 | `GREENHOUSE_LOOP_DELAY` | `0.1` | Main loop delay in seconds |
 
@@ -360,7 +364,7 @@ The `Control_Algorithms/` directory contains the original MATLAB fuzzy logic des
 | `Substrate_moisture_controller.mlx` | Pump | Moisture error | Pump PWM |
 | `Temperature_C02_Controller.mlx` | Fan | Temperature error (+ CO₂ in original design) | Fan PWM |
 
-> **Note:** The Python fan controller (`_build_fan` in `fuzzy_controller.py`) uses temperature error only. CO₂ concentration is still read from the sensor and logged to CSV, but it is not fed into the fuzzy controller in the current implementation.
+> **Note:** The Python fan controller (`_build_fan` in `fuzzy_controller.py`) uses both temperature and humidity error. CO₂ concentration is still read from the sensor and logged to CSV, but it is not fed into the fuzzy controller in the current implementation.
 
 ## System Status
 
